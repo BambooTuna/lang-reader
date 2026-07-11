@@ -199,7 +199,8 @@
     color: var(--muted);
     line-height: 1.2;
   }
-  .reading-output.kana-hidden .kana {
+  body.kana-hidden .kana,
+  body.kana-hidden .chip-kana {
     display: none;
   }
   .word-block {
@@ -264,6 +265,70 @@
     padding: 6px 10px;
     margin-bottom: 8px;
     display: none;
+  }
+  section.overlay-section {
+    margin-top: 16px;
+  }
+  section.overlay-section h2 {
+    font-size: 1rem;
+    margin: 18px 0 8px;
+  }
+  .overlay-hint {
+    font-size: 0.76rem;
+    color: var(--muted);
+    margin: 0 0 8px;
+  }
+  .overlay-container {
+    position: relative;
+    display: block;
+    width: 100%;
+    line-height: 0;
+    background: #111;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .overlay-container img {
+    width: 100%;
+    display: block;
+  }
+  .overlay-box {
+    position: absolute;
+    border: 1px solid rgba(179, 69, 44, 0.55);
+    border-radius: 2px;
+    background: rgba(179, 69, 44, 0.05);
+    cursor: pointer;
+  }
+  .overlay-box:hover {
+    background: rgba(179, 69, 44, 0.15);
+  }
+  .overlay-chip {
+    position: absolute;
+    transform: translate(-50%, 2px);
+    background: rgba(255, 255, 255, 0.85);
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 0.68rem;
+    line-height: 1.15;
+    padding: 1px 5px;
+    border-radius: 4px;
+    white-space: nowrap;
+    text-align: center;
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  }
+  .overlay-chip .chip-kana {
+    display: block;
+    font-size: 0.58rem;
+    font-weight: 400;
+    color: var(--muted);
+  }
+  .overlay-chip.speaking {
+    background: var(--accent);
+    color: #fff;
+  }
+  .overlay-chip.speaking .chip-kana {
+    color: #fff;
   }
   footer {
     text-align: center;
@@ -334,6 +399,14 @@
       <button class="action secondary" id="btn-reconvert">この内容で再変換</button>
     </div>
   </div>
+
+  <section class="overlay-section" id="overlay-section" style="display:none;">
+    <h2>画像ルビ表示</h2>
+    <p class="overlay-hint">ハングルの単語部分にローマ字ルビを重ねて表示します。チップまたは枠をタップすると発音を再生します。</p>
+    <div class="overlay-container" id="overlay-container">
+      <img id="overlay-image" alt="OCR対象画像">
+    </div>
+  </section>
 
   <section class="result">
     <h2>読み方</h2>
@@ -431,8 +504,10 @@
   }
 
   // ---------------- カタカナ表示トグル ----------------
+  // body にクラスを付けることで、読み方リストと画像オーバーレイのチップの
+  // 両方のカタカナ表示をまとめてON/OFFする。
   document.getElementById('toggle-kana').addEventListener('change', function () {
-    readingOutput.classList.toggle('kana-hidden', !this.checked);
+    document.body.classList.toggle('kana-hidden', !this.checked);
   });
 
   // ---------------- 音声読み上げ (Web Speech API) ----------------
@@ -531,11 +606,116 @@
 
   btnSpeakAll.addEventListener('click', speakAll);
 
+  // ---------------- 画像上へのルビ・オーバーレイ表示 ----------------
+  var overlaySection = document.getElementById('overlay-section');
+  var overlayContainer = document.getElementById('overlay-container');
+  var overlayImage = document.getElementById('overlay-image');
+
+  // ノイズ除去: ハングル比率50%以上 かつ confidence 55以上の単語のみオーバーレイ対象にする
+  var OVERLAY_HANGUL_RATIO_MIN = 0.5;
+  var OVERLAY_CONFIDENCE_MIN = 55;
+
+  function isMostlyHangul(text) {
+    if (!text) return false;
+    var hangulCount = 0;
+    for (var i = 0; i < text.length; i++) {
+      if (window.HangulReader.isHangulSyllable(text[i])) hangulCount++;
+    }
+    return (hangulCount / text.length) >= OVERLAY_HANGUL_RATIO_MIN;
+  }
+
+  function filterOverlayWords(words) {
+    return (words || []).filter(function (w) {
+      if (!w || !w.text || !w.bbox) return false;
+      var confidence = (typeof w.confidence === 'number') ? w.confidence : 0;
+      return isMostlyHangul(w.text) && confidence >= OVERLAY_CONFIDENCE_MIN;
+    });
+  }
+
+  // 単語テキストのうちハングル部分だけを読みに変換する（連音化も単語内で適用される）
+  function buildWordReading(rawText) {
+    var tokens = window.HangulReader.convertText(rawText);
+    var hangulText = '', roma = '', kana = '';
+    tokens.forEach(function (t) {
+      if (t.type === 'word') {
+        t.chars.forEach(function (c) {
+          hangulText += c.char;
+          roma += c.roma;
+          kana += c.kana;
+        });
+      }
+    });
+    return { hangulText: hangulText, roma: roma, kana: kana };
+  }
+
+  function clearOverlayChips() {
+    Array.prototype.slice.call(overlayContainer.children).forEach(function (child) {
+      if (child !== overlayImage) overlayContainer.removeChild(child);
+    });
+  }
+
+  function hideOverlaySection() {
+    overlaySection.style.display = 'none';
+    clearOverlayChips();
+  }
+
+  // words: Tesseract result.data.words、imageInfo: {src, width, height}（natural pixelサイズ）
+  function renderOverlay(words, imageInfo) {
+    clearOverlayChips();
+    if (!imageInfo || !imageInfo.src || !imageInfo.width || !imageInfo.height) {
+      hideOverlaySection();
+      return;
+    }
+    overlayImage.src = imageInfo.src;
+    var targets = filterOverlayWords(words);
+
+    targets.forEach(function (w) {
+      var reading = buildWordReading(w.text);
+      if (!reading.hangulText) return;
+      var bbox = w.bbox;
+      var leftPct = (bbox.x0 / imageInfo.width) * 100;
+      var topPct = (bbox.y0 / imageInfo.height) * 100;
+      var widthPct = ((bbox.x1 - bbox.x0) / imageInfo.width) * 100;
+      var heightPct = ((bbox.y1 - bbox.y0) / imageInfo.height) * 100;
+      var centerPct = ((bbox.x0 + bbox.x1) / 2 / imageInfo.width) * 100;
+      var bottomPct = (bbox.y1 / imageInfo.height) * 100;
+
+      var boxEl = document.createElement('div');
+      boxEl.className = 'overlay-box';
+      boxEl.style.left = leftPct + '%';
+      boxEl.style.top = topPct + '%';
+      boxEl.style.width = widthPct + '%';
+      boxEl.style.height = heightPct + '%';
+
+      var chipEl = document.createElement('div');
+      chipEl.className = 'overlay-chip';
+      chipEl.style.left = centerPct + '%';
+      chipEl.style.top = bottomPct + '%';
+      chipEl.innerHTML =
+        '<span class="chip-roma">' + escapeHtml(reading.roma) + '</span>' +
+        '<span class="chip-kana">' + escapeHtml(reading.kana) + '</span>';
+
+      var playThisWord = function (e) {
+        if (e) e.stopPropagation();
+        speakUnit(reading.hangulText, chipEl);
+      };
+      boxEl.addEventListener('click', playThisWord);
+      chipEl.addEventListener('click', playThisWord);
+
+      overlayContainer.appendChild(boxEl);
+      overlayContainer.appendChild(chipEl);
+    });
+
+    overlaySection.style.display = 'block';
+  }
+
   // ---------------- テキスト直接入力 ----------------
   document.getElementById('btn-direct-convert').addEventListener('click', function () {
+    hideOverlaySection();
     renderReading(document.getElementById('direct-text').value);
   });
   document.getElementById('direct-text').addEventListener('input', function () {
+    hideOverlaySection();
     renderReading(this.value);
   });
 
@@ -555,10 +735,13 @@
     progressInner.style.width = '0%';
   }
 
-  function runOcr(imageSource, statusEl) {
+  // getOverlayInfo: 省略可。OCRに使った画像の {src, width, height}（natural pixelサイズ）を
+  // 返す関数。認識完了後（画像の読み込みが確実に終わっているタイミング）に呼び出す。
+  function runOcr(imageSource, statusEl, getOverlayInfo) {
     progressWrap.style.display = 'block';
     statusEl.textContent = 'OCRエンジンを準備しています…（初回はダウンロードのため時間がかかります）';
     setProgress(0);
+    hideOverlaySection();
     return Tesseract.recognize(imageSource, 'kor', {
       logger: function (m) {
         if (m.status) {
@@ -576,10 +759,16 @@
       resetProgress();
       progressWrap.style.display = 'none';
       var text = (result && result.data && result.data.text) ? result.data.text.trim() : '';
+      var words = (result && result.data && result.data.words) ? result.data.words : [];
       statusEl.textContent = text ? '認識が完了しました。内容を確認・修正してください。' : '文字を認識できませんでした。画像やテキスト欄を確認してください。';
       recognizedWrap.style.display = 'block';
       recognizedText.value = text;
       renderReading(text);
+      if (getOverlayInfo) {
+        renderOverlay(words, getOverlayInfo());
+      } else {
+        hideOverlaySection();
+      }
     }).catch(function (err) {
       resetProgress();
       progressWrap.style.display = 'none';
@@ -628,7 +817,9 @@
     cameraCanvas.height = h;
     var ctx = cameraCanvas.getContext('2d');
     ctx.drawImage(video, 0, 0, w, h);
-    runOcr(cameraCanvas, cameraStatus);
+    runOcr(cameraCanvas, cameraStatus, function () {
+      return { src: cameraCanvas.toDataURL('image/png'), width: w, height: h };
+    });
   });
 
   // ---------------- 写真アップロード ----------------
@@ -692,7 +883,11 @@
   });
 
   btnUploadOcr.addEventListener('click', function () {
-    if (currentUploadFile) runOcr(currentUploadFile, uploadStatus);
+    if (currentUploadFile) {
+      runOcr(currentUploadFile, uploadStatus, function () {
+        return { src: uploadPreview.src, width: uploadPreview.naturalWidth, height: uploadPreview.naturalHeight };
+      });
+    }
   });
 })();
 </script>
