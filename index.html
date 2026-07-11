@@ -338,7 +338,7 @@
   <section class="result">
     <h2>読み方</h2>
     <div class="result-controls">
-      <button class="action" id="btn-speak-all">🔊 全文を再生</button>
+      <button class="action" id="btn-speak-all">▶ 全文を再生</button>
       <label class="kana-toggle"><input type="checkbox" id="toggle-kana" checked> カタカナ表示</label>
     </div>
     <div class="voice-warning" id="voice-warning"></div>
@@ -488,13 +488,16 @@
   }
 
   // 1文字 or 1単語を再生する（タップ／単語再生ボタン共通）
+  // ハイライトは utterance の onstart/onend に連動させ、実際に発話が始まった
+  // タイミングでハイライトを付け、終了(onend)/失敗(onerror)で解除する。
   function speakUnit(text, el) {
     if (!speechSupported || !text) return;
     window.speechSynthesis.cancel();
-    highlight(el);
+    clearHighlight();
     var utter = new SpeechSynthesisUtterance(text);
     utter.lang = 'ko-KR';
     if (koreanVoice) utter.voice = koreanVoice;
+    utter.onstart = function () { highlight(el); };
     utter.onend = clearHighlight;
     utter.onerror = clearHighlight;
     window.speechSynthesis.speak(utter);
@@ -515,10 +518,10 @@
       var text = el.dataset.word;
       idx++;
       if (!text) { playNext(); return; }
-      highlight(el);
       var utter = new SpeechSynthesisUtterance(text);
       utter.lang = 'ko-KR';
       if (koreanVoice) utter.voice = koreanVoice;
+      utter.onstart = function () { highlight(el); };
       utter.onend = playNext;
       utter.onerror = playNext;
       window.speechSynthesis.speak(utter);
