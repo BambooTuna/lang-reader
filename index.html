@@ -10,6 +10,15 @@
     --muted: #8a8478;
   }
   * { box-sizing: border-box; }
+  /* ページ全体の横スクロールを禁止する保険。個別要素側でも overflow-x:auto を
+     使う箇所があるが、ページ(html/body)自体は絶対に横に広がらないようにする。 */
+  html, body {
+    overflow-x: hidden;
+    max-width: 100%;
+  }
+  img, video, canvas {
+    max-width: 100%;
+  }
   body {
     margin: 0;
     font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", sans-serif;
@@ -32,6 +41,7 @@
   }
   main {
     max-width: 720px;
+    width: 100%;
     margin: 0 auto;
     padding: 0 12px;
   }
@@ -42,11 +52,16 @@
   }
   .tab-btn {
     flex: 1;
-    padding: 10px 6px;
+    min-height: 44px;
+    padding: 8px 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
     border: 1px solid var(--border);
     background: var(--panel);
     border-radius: 10px;
-    font-size: 0.9rem;
+    font-size: 0.88rem;
     color: var(--text);
     cursor: pointer;
   }
@@ -81,6 +96,7 @@
   button.action {
     flex: 1;
     min-width: 120px;
+    min-height: 44px;
     padding: 11px 10px;
     border-radius: 9px;
     border: none;
@@ -88,6 +104,9 @@
     color: #fff;
     font-size: 0.92rem;
     cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
   button.action.secondary {
     background: #eee7db;
@@ -157,6 +176,11 @@
     padding: 16px 12px;
     line-height: 2.6;
     word-break: keep-all;
+    max-width: 100%;
+    /* 保険: 万一OCRの誤認識等で区切りのない長大な単語ブロックが出来ても
+       ページ全体ではなくこのボックス内だけが横スクロールするようにする */
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
   }
   .char-col {
     display: flex;
@@ -217,10 +241,10 @@
   .word-speak-btn {
     border: none;
     background: transparent;
-    font-size: 1rem;
+    font-size: 1.05rem;
     line-height: 1;
     cursor: pointer;
-    padding: 4px 3px;
+    padding: 10px 6px;
     margin-right: 2px;
     color: var(--muted);
     align-self: center;
@@ -278,19 +302,49 @@
     color: var(--muted);
     margin: 0 0 8px;
   }
+  /* オーバーレイのズーム用スクロールコンテナ。overflow-x:auto を持つのはこの
+     要素自身であり、内側の .overlay-container が幅150%/200%になっても
+     ここで確実にクリップ／スクロールされ、ページ全体は絶対に横に広がらない。 */
+  .overlay-scroll {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    background: #111;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
   .overlay-container {
     position: relative;
     display: block;
     width: 100%;
     line-height: 0;
-    background: #111;
-    border: 1px solid var(--border);
-    border-radius: 12px;
     overflow: hidden;
   }
   .overlay-container img {
     width: 100%;
     display: block;
+  }
+  .overlay-zoom-controls {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+  }
+  .zoom-btn {
+    min-height: 44px;
+    padding: 8px 16px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text);
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  .zoom-btn.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
   }
   .overlay-box {
     position: absolute;
@@ -308,18 +362,21 @@
     background: rgba(255, 255, 255, 0.85);
     color: var(--accent);
     font-weight: 700;
-    font-size: 0.68rem;
-    line-height: 1.15;
-    padding: 1px 5px;
+    font-size: 11px;
+    line-height: 1.2;
+    padding: 2px 5px;
     border-radius: 4px;
     white-space: nowrap;
     text-align: center;
     cursor: pointer;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    max-width: 38vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .overlay-chip .chip-kana {
     display: block;
-    font-size: 0.58rem;
+    font-size: 10px;
     font-weight: 400;
     color: var(--muted);
   }
@@ -336,6 +393,12 @@
     color: var(--muted);
     margin-top: 24px;
     padding: 0 20px;
+  }
+  /* スマホ幅ではpaddingを詰めて表示領域を稼ぐ */
+  @media (max-width: 480px) {
+    main { padding: 0 8px; }
+    header { padding: 14px 10px 8px; }
+    .panel { padding: 10px; }
   }
 </style>
 
@@ -402,9 +465,16 @@
 
   <section class="overlay-section" id="overlay-section" style="display:none;">
     <h2>画像ルビ表示</h2>
-    <p class="overlay-hint">ハングルの単語部分にローマ字ルビを重ねて表示します。チップまたは枠をタップすると発音を再生します。</p>
-    <div class="overlay-container" id="overlay-container">
-      <img id="overlay-image" alt="OCR対象画像">
+    <p class="overlay-hint">ハングルの単語部分にローマ字ルビを重ねて表示します。チップまたは枠をタップすると発音を再生します。小さくて見づらいときは下のボタンで拡大できます。</p>
+    <div class="overlay-zoom-controls" id="overlay-zoom-controls">
+      <button type="button" class="zoom-btn active" data-zoom="100">×1</button>
+      <button type="button" class="zoom-btn" data-zoom="150">×1.5</button>
+      <button type="button" class="zoom-btn" data-zoom="200">×2</button>
+    </div>
+    <div class="overlay-scroll" id="overlay-scroll">
+      <div class="overlay-container" id="overlay-container">
+        <img id="overlay-image" alt="OCR対象画像">
+      </div>
     </div>
   </section>
 
@@ -608,12 +678,35 @@
 
   // ---------------- 画像上へのルビ・オーバーレイ表示 ----------------
   var overlaySection = document.getElementById('overlay-section');
+  var overlayScroll = document.getElementById('overlay-scroll');
   var overlayContainer = document.getElementById('overlay-container');
   var overlayImage = document.getElementById('overlay-image');
+  var zoomButtons = Array.prototype.slice.call(document.querySelectorAll('.zoom-btn'));
+
+  // ズーム: transform:scale ではなくコンテナ自体の width%を変えることで拡大する。
+  // チップ・枠は overlay-container に対する%配置なので、そのまま追従して拡大される。
+  // 実際に横スクロールするのは overlay-scroll （overflow-x:auto）の内側だけなので、
+  // ページ全体の幅には一切影響しない。
+  function resetZoom() {
+    zoomButtons.forEach(function (b) { b.classList.remove('active'); });
+    if (zoomButtons[0]) zoomButtons[0].classList.add('active');
+    overlayContainer.style.width = '100%';
+    if (overlayScroll) overlayScroll.scrollLeft = 0;
+  }
+  zoomButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      zoomButtons.forEach(function (b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      overlayContainer.style.width = btn.dataset.zoom + '%';
+    });
+  });
 
   // ノイズ除去: ハングル比率50%以上 かつ confidence 55以上の単語のみオーバーレイ対象にする
   var OVERLAY_HANGUL_RATIO_MIN = 0.5;
   var OVERLAY_CONFIDENCE_MIN = 55;
+  // チップが画像の左右端からこの割合(%)以内にある場合は中央寄せをやめ、
+  // 画像の外にはみ出さないよう左端/右端基準に揃える
+  var CHIP_EDGE_MARGIN_PCT = 12;
 
   function isMostlyHangul(text) {
     if (!text) return false;
@@ -657,11 +750,13 @@
   function hideOverlaySection() {
     overlaySection.style.display = 'none';
     clearOverlayChips();
+    resetZoom();
   }
 
   // words: Tesseract result.data.words、imageInfo: {src, width, height}（natural pixelサイズ）
   function renderOverlay(words, imageInfo) {
     clearOverlayChips();
+    resetZoom();
     if (!imageInfo || !imageInfo.src || !imageInfo.width || !imageInfo.height) {
       hideOverlaySection();
       return;
@@ -675,9 +770,10 @@
       var bbox = w.bbox;
       var leftPct = (bbox.x0 / imageInfo.width) * 100;
       var topPct = (bbox.y0 / imageInfo.height) * 100;
-      var widthPct = ((bbox.x1 - bbox.x0) / imageInfo.width) * 100;
+      var rightPct = (bbox.x1 / imageInfo.width) * 100;
+      var widthPct = rightPct - leftPct;
       var heightPct = ((bbox.y1 - bbox.y0) / imageInfo.height) * 100;
-      var centerPct = ((bbox.x0 + bbox.x1) / 2 / imageInfo.width) * 100;
+      var centerPct = (leftPct + rightPct) / 2;
       var bottomPct = (bbox.y1 / imageInfo.height) * 100;
 
       var boxEl = document.createElement('div');
@@ -689,8 +785,19 @@
 
       var chipEl = document.createElement('div');
       chipEl.className = 'overlay-chip';
-      chipEl.style.left = centerPct + '%';
       chipEl.style.top = bottomPct + '%';
+      // 画像の左右端に近いチップは中央寄せをやめて左端/右端基準に揃え、
+      // 画像・オーバーレイコンテナの外にはみ出さないようにする
+      if (centerPct <= CHIP_EDGE_MARGIN_PCT) {
+        chipEl.style.left = leftPct + '%';
+        chipEl.style.transform = 'translate(0, 2px)';
+      } else if (centerPct >= (100 - CHIP_EDGE_MARGIN_PCT)) {
+        chipEl.style.left = rightPct + '%';
+        chipEl.style.transform = 'translate(-100%, 2px)';
+      } else {
+        chipEl.style.left = centerPct + '%';
+        chipEl.style.transform = 'translate(-50%, 2px)';
+      }
       chipEl.innerHTML =
         '<span class="chip-roma">' + escapeHtml(reading.roma) + '</span>' +
         '<span class="chip-kana">' + escapeHtml(reading.kana) + '</span>';
