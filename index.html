@@ -429,6 +429,90 @@
     margin-top: 24px;
     padding: 0 20px;
   }
+  /* 高精度モード（LLM）設定 */
+  .llm-settings {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 14px;
+    margin: 10px 0;
+  }
+  .llm-settings summary {
+    cursor: pointer;
+    font-size: 0.92rem;
+    font-weight: 700;
+    padding: 6px 2px;
+    list-style: none;
+  }
+  .llm-settings summary::-webkit-details-marker {
+    display: none;
+  }
+  .llm-settings summary::after {
+    content: ' ▸';
+    color: var(--muted);
+  }
+  .llm-settings[open] summary::after {
+    content: ' ▾';
+  }
+  .llm-settings-body {
+    margin-top: 8px;
+  }
+  .llm-warning {
+    font-size: 0.74rem;
+    color: var(--muted);
+    background: #fdf1ec;
+    border: 1px solid #f3d5c8;
+    border-radius: 8px;
+    padding: 8px 10px;
+    line-height: 1.6;
+    margin: 0 0 10px;
+  }
+  .llm-field-label {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--text);
+    margin-bottom: 4px;
+  }
+  .llm-key-row {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  .llm-key-row input {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px;
+    font-size: 0.9rem;
+  }
+  .llm-eye-btn {
+    min-width: 44px;
+    min-height: 44px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    cursor: pointer;
+    font-size: 1rem;
+  }
+  .llm-mode-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.85rem;
+    margin-top: 12px;
+    padding: 6px 0;
+  }
+  .llm-mode-toggle input[disabled] + span,
+  .llm-mode-toggle:has(input[disabled]) {
+    color: var(--muted);
+  }
+  .llm-settings-status {
+    font-size: 0.78rem;
+    color: var(--accent);
+    min-height: 1.2em;
+    margin: 8px 0 0;
+  }
   /* スマホ幅ではpaddingを詰めて表示領域を稼ぐ */
   @media (max-width: 480px) {
     main { padding: 0 8px; }
@@ -443,6 +527,31 @@
 </header>
 
 <main>
+  <details class="llm-settings" id="llm-settings">
+    <summary>⚙️ 高精度モード（LLM）</summary>
+    <div class="llm-settings-body">
+      <p class="llm-warning">
+        ・APIキーはこの端末のブラウザ（localStorage）にのみ平文で保存され、Anthropic API以外には送信されません。<br>
+        ・共有端末では使用しないでください。専用に発行した支出上限付きワークスペースのキーを推奨します。<br>
+        ・利用ごとにAPI料金がかかります（写真1枚あたり約0.5〜1円程度）。
+      </p>
+      <label class="llm-field-label" for="llm-api-key-input">Anthropic APIキー</label>
+      <div class="llm-key-row">
+        <input type="password" id="llm-api-key-input" placeholder="sk-ant-..." autocomplete="off">
+        <button type="button" class="llm-eye-btn" id="btn-llm-toggle-visibility" aria-label="キーの表示切替">👁</button>
+      </div>
+      <div class="btn-row">
+        <button type="button" class="action secondary" id="btn-llm-save-key">保存</button>
+        <button type="button" class="action secondary" id="btn-llm-delete-key">削除</button>
+      </div>
+      <label class="llm-mode-toggle">
+        <input type="checkbox" id="toggle-llm-mode" disabled>
+        <span>高精度モードを有効にする（Tesseractの認識結果をLLMで補正します）</span>
+      </label>
+      <p class="llm-settings-status" id="llm-settings-status"></p>
+    </div>
+  </details>
+
   <div class="tabs">
     <button class="tab-btn active" data-tab="camera">カメラ</button>
     <button class="tab-btn" data-tab="upload">写真アップロード</button>
@@ -1012,6 +1121,69 @@
     return { getSelectionNaturalRect: getSelectionNaturalRect, clearSelection: clearSelection };
   }
 
+  // ---------------- 高精度モード（LLM）設定 ----------------
+  // APIキー・ON/OFF状態はこの端末のlocalStorageにのみ保存する（サーバー送信なし）。
+  var LLM_KEY_STORAGE = 'langReaderAnthropicApiKey';
+  var LLM_ENABLED_STORAGE = 'langReaderLlmModeEnabled';
+
+  var llmApiKeyInput = document.getElementById('llm-api-key-input');
+  var btnLlmToggleVisibility = document.getElementById('btn-llm-toggle-visibility');
+  var btnLlmSaveKey = document.getElementById('btn-llm-save-key');
+  var btnLlmDeleteKey = document.getElementById('btn-llm-delete-key');
+  var toggleLlmMode = document.getElementById('toggle-llm-mode');
+  var llmSettingsStatus = document.getElementById('llm-settings-status');
+
+  function getLlmApiKey() {
+    try { return localStorage.getItem(LLM_KEY_STORAGE) || ''; } catch (e) { return ''; }
+  }
+  function setLlmApiKey(key) {
+    try { localStorage.setItem(LLM_KEY_STORAGE, key); } catch (e) { /* noop */ }
+  }
+  function removeLlmApiKey() {
+    try { localStorage.removeItem(LLM_KEY_STORAGE); } catch (e) { /* noop */ }
+  }
+  function getLlmModeEnabledStored() {
+    try { return localStorage.getItem(LLM_ENABLED_STORAGE) === 'true'; } catch (e) { return false; }
+  }
+  function setLlmModeEnabledStored(v) {
+    try { localStorage.setItem(LLM_ENABLED_STORAGE, v ? 'true' : 'false'); } catch (e) { /* noop */ }
+  }
+  // OFF、またはキー未設定なら常にfalse＝一切APIを呼ばない通常モード
+  function isLlmModeActive() {
+    return getLlmModeEnabledStored() && !!getLlmApiKey();
+  }
+
+  function refreshLlmSettingsUi() {
+    var hasKey = !!getLlmApiKey();
+    toggleLlmMode.disabled = !hasKey;
+    toggleLlmMode.checked = hasKey && getLlmModeEnabledStored();
+    llmApiKeyInput.value = hasKey ? getLlmApiKey() : '';
+  }
+  refreshLlmSettingsUi();
+
+  btnLlmSaveKey.addEventListener('click', function () {
+    var v = llmApiKeyInput.value.trim();
+    if (!v) {
+      llmSettingsStatus.textContent = 'APIキーを入力してください。';
+      return;
+    }
+    setLlmApiKey(v);
+    refreshLlmSettingsUi();
+    llmSettingsStatus.textContent = '保存しました。';
+  });
+  btnLlmDeleteKey.addEventListener('click', function () {
+    removeLlmApiKey();
+    setLlmModeEnabledStored(false);
+    refreshLlmSettingsUi();
+    llmSettingsStatus.textContent = '削除しました。';
+  });
+  toggleLlmMode.addEventListener('change', function () {
+    setLlmModeEnabledStored(this.checked);
+  });
+  btnLlmToggleVisibility.addEventListener('click', function () {
+    llmApiKeyInput.type = (llmApiKeyInput.type === 'password') ? 'text' : 'password';
+  });
+
   // ---------------- OCR 共通処理 ----------------
   var progressWrap = document.getElementById('ocr-progress-wrap');
   var progressOuter = document.getElementById('progress-outer');
@@ -1103,8 +1275,208 @@
     });
   }
 
-  // getOverlayInfo: 省略可。OCRに使った「元画像」(前処理前・表示用)の{src,width,height}を
-  //   返す関数。認識完了後（画像の読み込みが確実に終わっているタイミング）に呼び出す。
+  // ---------------- 高精度モード（LLM）によるハイブリッド補正 ----------------
+  // 方針: 位置(bbox)はTesseract、テキストはLLMという役割分担。LLMにはbboxを出させない
+  // （座標出力は信頼できないため）。各ターゲットのbboxで元画像から切り出した小画像を
+  // Anthropic APIへまとめて送り、テキストだけを補正してもらう。
+  var LLM_API_URL = 'https://api.anthropic.com/v1/messages';
+  var LLM_MODEL = 'claude-haiku-4-5';
+  var LLM_TIMEOUT_MS = 30000;
+  var LLM_CHUNK_SIZE = 15; // 10〜20枚/チャンクの範囲内
+  var LLM_CROP_PADDING_RATIO = 0.3; // bboxの高さの30%をpaddingとして追加
+
+  function chunkArray(arr, size) {
+    var chunks = [];
+    for (var i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
+    return chunks;
+  }
+
+  // sourceEl(元画像の描画可能要素)からbbox(＋padding)を切り出し、base64 PNG(プレフィックス無し)を返す
+  function cropTargetToBase64Png(sourceEl, bbox, imgW, imgH) {
+    var h = Math.max(1, bbox.y1 - bbox.y0);
+    var pad = h * LLM_CROP_PADDING_RATIO;
+    var left = Math.max(0, Math.floor(bbox.x0 - pad));
+    var top = Math.max(0, Math.floor(bbox.y0 - pad));
+    var right = Math.min(imgW, Math.ceil(bbox.x1 + pad));
+    var bottom = Math.min(imgH, Math.ceil(bbox.y1 + pad));
+    var w = Math.max(1, right - left);
+    var hh = Math.max(1, bottom - top);
+
+    var canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = hh;
+    var ctx = canvas.getContext('2d');
+    ctx.drawImage(sourceEl, left, top, w, hh, 0, 0, w, hh);
+    var dataUrl = canvas.toDataURL('image/png');
+    return dataUrl.replace(/^data:image\/[^;]+;base64,/, '');
+  }
+
+  // ```json ... ``` のようなコードフェンスに包まれて返る場合があるので剥がしてからパースする。
+  // パース失敗・配列以外の場合はnullを返す（例外は投げない＝呼び出し元でそのチャンクを
+  // Tesseract結果のままにできるようにするため）。
+  function parseJsonArrayLoose(raw) {
+    var text = String(raw || '').trim();
+    var fenceMatch = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+    if (fenceMatch) text = fenceMatch[1].trim();
+    try {
+      var parsed = JSON.parse(text);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function describeLlmError(err) {
+    if (!err) return 'LLM補正でエラーが発生しました。';
+    if (err.status === 401 || err.status === 403) return 'APIキーが無効です。';
+    if (err.status === 429) return 'レート制限に達しました。しばらく待って再試行してください。';
+    if (err.status === 'timeout') return 'LLMへのリクエストがタイムアウトしました。';
+    return 'LLM補正でエラーが発生しました（' + (err.message || '不明なエラー') + '）。';
+  }
+
+  // base64PngArray: crop画像(base64、プレフィックス無し)の配列。
+  // 戻り値: Promise<Array<string>|null>（配列以外・パース失敗はnull、HTTPエラー等は例外を投げる）
+  // 第一経路はstructured outputs(output_config)でスキーマ準拠JSONをAPIに保証させる。
+  // output_config起因の400が返る環境変化に備え、400時のみ旧方式(プロンプトJSON)で1回だけ再試行。
+  function callAnthropicBatch(apiKey, base64PngArray) {
+    return callAnthropicOnce(apiKey, base64PngArray, true).catch(function (err) {
+      if (err && err.status === 400) return callAnthropicOnce(apiKey, base64PngArray, false);
+      throw err;
+    });
+  }
+
+  function callAnthropicOnce(apiKey, base64PngArray, useStructured) {
+    var content = base64PngArray.map(function (b64) {
+      return { type: 'image', source: { type: 'base64', media_type: 'image/png', data: b64 } };
+    });
+    var promptText = useStructured
+      ? ('各画像は韓国語単語帳の切り抜きです。画像は' + base64PngArray.length +
+        '枚あります。各画像に写っている韓国語テキストを、texts配列に画像と同じ順で入れて返してください。' +
+        '韓国語が読み取れない画像は空文字にしてください。')
+      : ('各画像は韓国語単語帳の切り抜きです。画像' + base64PngArray.length +
+        '枚それぞれに写っている韓国語テキストのみを、["텍스트1","텍스트2",...] のようなJSON配列だけで返してください。' +
+        '韓国語が読み取れない画像は空文字にしてください。説明文は不要です。');
+    content.push({ type: 'text', text: promptText });
+
+    var body = {
+      model: LLM_MODEL,
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: content }]
+    };
+    if (useStructured) {
+      body.output_config = {
+        format: {
+          type: 'json_schema',
+          schema: {
+            type: 'object',
+            properties: { texts: { type: 'array', items: { type: 'string' } } },
+            required: ['texts'],
+            additionalProperties: false
+          }
+        }
+      };
+    }
+
+    var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var timeoutId = controller ? setTimeout(function () { controller.abort(); }, LLM_TIMEOUT_MS) : null;
+
+    var fetchOpts = {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify(body)
+    };
+    if (controller) fetchOpts.signal = controller.signal;
+
+    return fetch(LLM_API_URL, fetchOpts).then(function (resp) {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (!resp.ok) {
+        var err = new Error('Anthropic API HTTPエラー: ' + resp.status);
+        err.status = resp.status;
+        throw err;
+      }
+      return resp.json();
+    }).then(function (data) {
+      var block = null;
+      if (data && data.content) {
+        for (var i = 0; i < data.content.length; i++) {
+          if (data.content[i] && data.content[i].type === 'text') { block = data.content[i]; break; }
+        }
+      }
+      var raw = (block && block.text) || '';
+      if (useStructured) {
+        try {
+          var parsed = JSON.parse(raw);
+          return (parsed && Array.isArray(parsed.texts)) ? parsed.texts : null;
+        } catch (e) {
+          return null;
+        }
+      }
+      return parseJsonArrayLoose(raw);
+    }).catch(function (err) {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (err && err.name === 'AbortError') {
+        var e = new Error('タイムアウトしました');
+        e.status = 'timeout';
+        throw e;
+      }
+      throw err;
+    });
+  }
+
+  // targets: buildOverlayTargetsFromLines()の出力（{text,bbox,confidence}の配列）。
+  // imageInfo: {sourceEl, width, height} — sourceElは元画像(前処理前・フル解像度)を
+  //   drawImageできる要素(canvas/img)。
+  // 戻り値: Promise<{targets, errorMessage}>。
+  //   errorMessageが非nullの場合はHTTPエラー等で以降のチャンクを打ち切ったことを示す
+  //   （その場合、未処理のターゲットはTesseractのテキストのまま返る＝フォールバック）。
+  //   空文字に補正されたターゲットはノイズとして除外する。
+  function correctTargetsWithLlm(targets, imageInfo, statusEl) {
+    var apiKey = getLlmApiKey();
+    if (!apiKey || !targets || targets.length === 0) {
+      return Promise.resolve({ targets: targets || [], errorMessage: null });
+    }
+
+    var corrected = targets.map(function (t) {
+      return { text: t.text, bbox: t.bbox, confidence: t.confidence };
+    });
+    var indices = targets.map(function (_, i) { return i; });
+    var chunks = chunkArray(indices, LLM_CHUNK_SIZE);
+    var errorMessage = null;
+
+    var chain = Promise.resolve();
+    chunks.forEach(function (idxChunk, chunkPos) {
+      chain = chain.then(function () {
+        if (errorMessage) return; // 直前のチャンクでHTTPエラー等 → 無駄打ちを避け以降はスキップ
+        statusEl.textContent = 'LLMで補正中…(' + (chunkPos + 1) + '/' + chunks.length + ')';
+        var crops = idxChunk.map(function (i) {
+          return cropTargetToBase64Png(imageInfo.sourceEl, targets[i].bbox, imageInfo.width, imageInfo.height);
+        });
+        return callAnthropicBatch(apiKey, crops).then(function (texts) {
+          if (texts && texts.length === idxChunk.length) {
+            idxChunk.forEach(function (targetIdx, i) { corrected[targetIdx].text = texts[i]; });
+          }
+          // texts が null または枚数不一致の場合はこのチャンクをTesseract結果のままにする
+        }).catch(function (err) {
+          errorMessage = describeLlmError(err);
+        });
+      });
+    });
+
+    return chain.then(function () {
+      var filtered = corrected.filter(function (t) { return t.text && t.text.trim(); });
+      return { targets: filtered, errorMessage: errorMessage };
+    });
+  }
+
+  // getOverlayInfo: 省略可。OCRに使った「元画像」(前処理前・表示用)の
+  //   {src, width, height, sourceEl} を返す関数。sourceElはLLM高精度モードでの
+  //   crop切り出しにも使う元画像の描画可能要素(canvas/img)。認識完了後（画像の
+  //   読み込みが確実に終わっているタイミング）に呼び出す。
   // opts.rectangle: 省略可。前処理後canvasの自然px座標系でのTesseract rectangleオプション
   //   （{left,top,width,height}）。Node+tesseract.js@5での検証の結果、rectangle使用時に
   //   Tesseractが返すbboxはrectangle起点の相対座標ではなく、recognizeに渡した画像に対する
@@ -1152,16 +1524,38 @@
       var text = (result && result.data && result.data.text) ? result.data.text.trim() : '';
       var rawLines = (result && result.data && result.data.lines) ? result.data.lines : [];
       var lines = descaleLines(rawLines, scale);
-      statusEl.textContent = text ? '認識が完了しました。内容を確認・修正してください。' : '文字を認識できませんでした。画像やテキスト欄を確認してください。';
       recognizedWrap.style.display = 'block';
       recognizedText.value = text;
       renderReading(text);
-      if (getOverlayInfo) {
-        var targets = buildOverlayTargetsFromLines(lines);
-        renderOverlay(targets, getOverlayInfo());
-      } else {
+
+      if (!getOverlayInfo) {
         hideOverlaySection();
+        statusEl.textContent = text ? '認識が完了しました。内容を確認・修正してください。' : '文字を認識できませんでした。画像やテキスト欄を確認してください。';
+        return;
       }
+
+      var imageInfo = getOverlayInfo();
+      var targets = buildOverlayTargetsFromLines(lines);
+
+      // 高精度モード（LLM）がON かつ APIキー設定済みの場合のみ、Tesseractの結果を
+      // LLMでテキスト補正する。OFF/未設定なら従来通り一切APIを呼ばない。
+      if (isLlmModeActive() && targets.length > 0) {
+        return correctTargetsWithLlm(targets, imageInfo, statusEl).then(function (res) {
+          renderOverlay(res.targets, imageInfo);
+          var correctedFullText = res.targets.map(function (t) { return t.text; }).join('\n');
+          var finalText = correctedFullText || text;
+          recognizedText.value = finalText;
+          renderReading(finalText);
+          if (res.errorMessage) {
+            statusEl.textContent = res.errorMessage + '（Tesseractの認識結果を表示しています）';
+          } else {
+            statusEl.textContent = finalText ? '認識が完了しました（LLM補正済み）。内容を確認・修正してください。' : '文字を認識できませんでした。画像やテキスト欄を確認してください。';
+          }
+        });
+      }
+
+      renderOverlay(targets, imageInfo);
+      statusEl.textContent = text ? '認識が完了しました。内容を確認・修正してください。' : '文字を認識できませんでした。画像やテキスト欄を確認してください。';
     }).catch(function (err) {
       resetProgress();
       progressWrap.style.display = 'none';
@@ -1265,7 +1659,8 @@
       height: Math.round(selRect.height * prep.scale)
     } : null;
     runOcr(prep.canvas, cameraStatus, function () {
-      return { src: cameraCapturedImg.src, width: naturalW, height: naturalH };
+      // sourceEl: LLM高精度モードでのcrop切り出しは前処理前のcameraCanvas(フル解像度)から行う
+      return { src: cameraCapturedImg.src, width: naturalW, height: naturalH, sourceEl: cameraCanvas };
     }, { rectangle: rectangle, scale: prep.scale });
   });
 
@@ -1354,7 +1749,8 @@
       height: Math.round(selRect.height * prep.scale)
     } : null;
     runOcr(prep.canvas, uploadStatus, function () {
-      return { src: uploadPreview.src, width: naturalW, height: naturalH };
+      // sourceEl: LLM高精度モードでのcrop切り出しは前処理前のuploadPreview(フル解像度)から行う
+      return { src: uploadPreview.src, width: naturalW, height: naturalH, sourceEl: uploadPreview };
     }, { rectangle: rectangle, scale: prep.scale });
   });
 })();
