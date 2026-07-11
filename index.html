@@ -1,0 +1,695 @@
+<title>ハングル読みルビ</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #f7f6f3;
+    --panel: #ffffff;
+    --border: #ddd6cc;
+    --accent: #b3452c;
+    --text: #2b2620;
+    --muted: #8a8478;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 0 0 40px;
+  }
+  header {
+    padding: 18px 16px 10px;
+    text-align: center;
+  }
+  header h1 {
+    margin: 0 0 4px;
+    font-size: 1.4rem;
+  }
+  header p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.82rem;
+  }
+  main {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 0 12px;
+  }
+  .tabs {
+    display: flex;
+    gap: 6px;
+    margin: 10px 0;
+  }
+  .tab-btn {
+    flex: 1;
+    padding: 10px 6px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    border-radius: 10px;
+    font-size: 0.9rem;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .tab-btn.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+  .panel {
+    display: none;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px;
+    margin-bottom: 14px;
+  }
+  .panel.active { display: block; }
+  video, canvas.preview-canvas, img.preview-img {
+    width: 100%;
+    max-height: 340px;
+    object-fit: contain;
+    background: #111;
+    border-radius: 8px;
+    display: block;
+  }
+  .btn-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+  }
+  button.action {
+    flex: 1;
+    min-width: 120px;
+    padding: 11px 10px;
+    border-radius: 9px;
+    border: none;
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.92rem;
+    cursor: pointer;
+  }
+  button.action.secondary {
+    background: #eee7db;
+    color: var(--text);
+  }
+  button.action:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .dropzone {
+    border: 2px dashed var(--border);
+    border-radius: 10px;
+    padding: 24px 10px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  .dropzone.drag-over {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: #fdf1ec;
+  }
+  input[type="file"] { display: none; }
+  textarea {
+    width: 100%;
+    min-height: 110px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px;
+    font-size: 0.95rem;
+    resize: vertical;
+    font-family: inherit;
+  }
+  .status-box {
+    margin-top: 10px;
+    font-size: 0.82rem;
+    color: var(--muted);
+    min-height: 1.2em;
+  }
+  .progress-outer {
+    height: 6px;
+    background: #eee;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-top: 6px;
+    display: none;
+  }
+  .progress-outer.active { display: block; }
+  .progress-inner {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    transition: width 0.2s;
+  }
+  section.result {
+    margin-top: 16px;
+  }
+  section.result h2 {
+    font-size: 1rem;
+    margin: 18px 0 8px;
+  }
+  .reading-output {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 12px;
+    line-height: 2.6;
+    word-break: keep-all;
+  }
+  .char-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 2px 4px;
+    min-width: 1.6em;
+    cursor: pointer;
+    border-radius: 6px;
+    transition: background 0.15s;
+  }
+  .char-col:hover {
+    background: #f3e9df;
+  }
+  .char-col:active,
+  .char-col.speaking {
+    background: var(--accent);
+  }
+  .char-col.speaking .hangul,
+  .char-col.speaking .roma,
+  .char-col.speaking .kana {
+    color: #fff;
+  }
+  .char-col .hangul {
+    font-size: 1.5rem;
+    line-height: 1.3;
+  }
+  .char-col .roma {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--accent);
+    line-height: 1.2;
+    margin-top: 2px;
+  }
+  .char-col.speaking .roma {
+    color: #fff;
+  }
+  .char-col .kana {
+    font-size: 0.68rem;
+    color: var(--muted);
+    line-height: 1.2;
+  }
+  .reading-output.kana-hidden .kana {
+    display: none;
+  }
+  .word-block {
+    display: inline-flex;
+    align-items: center;
+    margin: 4px 6px 4px 0;
+    vertical-align: top;
+    border-radius: 8px;
+    padding: 2px;
+  }
+  .word-block.speaking {
+    background: #fde9df;
+  }
+  .word-speak-btn {
+    border: none;
+    background: transparent;
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 4px 3px;
+    margin-right: 2px;
+    color: var(--muted);
+    align-self: center;
+  }
+  .word-speak-btn:hover,
+  .word-speak-btn:active {
+    color: var(--accent);
+  }
+  .other-token {
+    font-size: 1.1rem;
+    white-space: pre-wrap;
+    align-self: flex-end;
+    margin: 4px 2px;
+  }
+  .result-controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .result-controls button.action {
+    flex: none;
+    min-width: 0;
+    padding: 8px 14px;
+  }
+  .kana-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.82rem;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .voice-warning {
+    font-size: 0.76rem;
+    color: var(--accent);
+    background: #fdf1ec;
+    border: 1px solid #f3d5c8;
+    border-radius: 8px;
+    padding: 6px 10px;
+    margin-bottom: 8px;
+    display: none;
+  }
+  footer {
+    text-align: center;
+    font-size: 0.72rem;
+    color: var(--muted);
+    margin-top: 24px;
+    padding: 0 20px;
+  }
+</style>
+
+<header>
+  <h1>ハングル読みルビ</h1>
+  <p>カメラ・写真・テキストからハングルを読み取り、ローマ字／カタカナを表示します（タップで発音も再生できます）</p>
+</header>
+
+<main>
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="camera">カメラ</button>
+    <button class="tab-btn" data-tab="upload">写真アップロード</button>
+    <button class="tab-btn" data-tab="text">テキスト入力</button>
+  </div>
+
+  <!-- カメラタブ -->
+  <div class="panel active" id="panel-camera">
+    <video id="camera-video" autoplay playsinline muted></video>
+    <canvas id="camera-canvas" class="preview-canvas" style="display:none;"></canvas>
+    <div class="btn-row">
+      <button class="action" id="btn-camera-start">カメラを起動</button>
+      <button class="action" id="btn-camera-shot" disabled>撮影して読み取る</button>
+    </div>
+    <div class="status-box" id="camera-status"></div>
+  </div>
+
+  <!-- アップロードタブ -->
+  <div class="panel" id="panel-upload">
+    <div class="dropzone" id="dropzone">
+      写真をドラッグ＆ドロップ<br>
+      またはクリックして選択<br>
+      （クリップボードに画像をコピーして Ctrl+V / Cmd+V でも貼り付け可）
+    </div>
+    <input type="file" id="file-input" accept="image/*">
+    <img id="upload-preview" class="preview-img" style="display:none;">
+    <div class="btn-row">
+      <button class="action" id="btn-upload-ocr" disabled>この画像を読み取る</button>
+    </div>
+    <div class="status-box" id="upload-status"></div>
+  </div>
+
+  <!-- テキスト入力タブ -->
+  <div class="panel" id="panel-text">
+    <textarea id="direct-text" placeholder="韓国語のテキストを貼り付けてください。例: 한국어 공부 화이팅!"></textarea>
+    <div class="btn-row">
+      <button class="action" id="btn-direct-convert">変換する</button>
+    </div>
+  </div>
+
+  <!-- OCR共通: 進捗・認識結果編集 -->
+  <div id="ocr-progress-wrap" style="display:none;">
+    <div class="progress-outer" id="progress-outer">
+      <div class="progress-inner" id="progress-inner"></div>
+    </div>
+  </div>
+
+  <div id="recognized-wrap" style="display:none;">
+    <h2 style="font-size:0.95rem;margin:14px 0 6px;">認識結果（編集して再変換できます）</h2>
+    <textarea id="recognized-text"></textarea>
+    <div class="btn-row">
+      <button class="action secondary" id="btn-reconvert">この内容で再変換</button>
+    </div>
+  </div>
+
+  <section class="result">
+    <h2>読み方</h2>
+    <div class="result-controls">
+      <button class="action" id="btn-speak-all">🔊 全文を再生</button>
+      <label class="kana-toggle"><input type="checkbox" id="toggle-kana" checked> カタカナ表示</label>
+    </div>
+    <div class="voice-warning" id="voice-warning"></div>
+    <div class="reading-output" id="reading-output">
+      <span style="color:#8a8478;">ここに変換結果が表示されます</span>
+    </div>
+  </section>
+</main>
+
+<footer>
+  OCR: Tesseract.js（初回はインターネット接続が必要）／ 発音規則は連音化・終声の代表音化のみの簡易実装です
+</footer>
+
+<script src="hangul.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  // ---------------- タブ切替 ----------------
+  var tabButtons = document.querySelectorAll('.tab-btn');
+  var panels = {
+    camera: document.getElementById('panel-camera'),
+    upload: document.getElementById('panel-upload'),
+    text: document.getElementById('panel-text')
+  };
+  tabButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      tabButtons.forEach(function (b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      Object.keys(panels).forEach(function (k) { panels[k].classList.remove('active'); });
+      panels[btn.dataset.tab].classList.add('active');
+    });
+  });
+
+  // ---------------- 読み方表示 ----------------
+  var readingOutput = document.getElementById('reading-output');
+
+  function renderReading(text) {
+    var tokens = window.HangulReader.convertText(text);
+    readingOutput.innerHTML = '';
+    if (!text || tokens.length === 0) {
+      readingOutput.innerHTML = '<span style="color:#8a8478;">ここに変換結果が表示されます</span>';
+      return;
+    }
+    tokens.forEach(function (token) {
+      if (token.type === 'word') {
+        var wordText = token.chars.map(function (c) { return c.char; }).join('');
+        var wordEl = document.createElement('span');
+        wordEl.className = 'word-block';
+        wordEl.dataset.word = wordText;
+
+        var speakBtn = document.createElement('button');
+        speakBtn.type = 'button';
+        speakBtn.className = 'word-speak-btn';
+        speakBtn.textContent = '🔊';
+        speakBtn.setAttribute('aria-label', '単語「' + wordText + '」を再生');
+        speakBtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          speakUnit(wordText, wordEl);
+        });
+        wordEl.appendChild(speakBtn);
+
+        token.chars.forEach(function (c) {
+          var col = document.createElement('span');
+          col.className = 'char-col';
+          col.innerHTML =
+            '<span class="hangul">' + escapeHtml(c.char) + '</span>' +
+            '<span class="roma">' + escapeHtml(c.roma) + '</span>' +
+            '<span class="kana">' + escapeHtml(c.kana) + '</span>';
+          col.addEventListener('click', function () {
+            speakUnit(c.char, col);
+          });
+          wordEl.appendChild(col);
+        });
+        readingOutput.appendChild(wordEl);
+      } else {
+        var otherEl = document.createElement('span');
+        otherEl.className = 'other-token';
+        otherEl.textContent = token.text;
+        readingOutput.appendChild(otherEl);
+      }
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (ch) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch];
+    });
+  }
+
+  // ---------------- カタカナ表示トグル ----------------
+  document.getElementById('toggle-kana').addEventListener('change', function () {
+    readingOutput.classList.toggle('kana-hidden', !this.checked);
+  });
+
+  // ---------------- 音声読み上げ (Web Speech API) ----------------
+  var voiceWarningEl = document.getElementById('voice-warning');
+  var btnSpeakAll = document.getElementById('btn-speak-all');
+  var speechSupported = ('speechSynthesis' in window) && (typeof SpeechSynthesisUtterance !== 'undefined');
+  var koreanVoice = null;
+  var currentHighlightEl = null;
+
+  function showVoiceWarning(msg) {
+    voiceWarningEl.textContent = msg;
+    voiceWarningEl.style.display = 'block';
+  }
+  function hideVoiceWarning() {
+    voiceWarningEl.style.display = 'none';
+  }
+
+  function refreshVoices() {
+    if (!speechSupported) return;
+    var voices = window.speechSynthesis.getVoices() || [];
+    if (voices.length === 0) return; // 非同期ロード待ち。voiceschangedで再度呼ばれる
+    koreanVoice = voices.filter(function (v) {
+      return v.lang && v.lang.toLowerCase().indexOf('ko') === 0;
+    })[0] || null;
+    if (koreanVoice) {
+      hideVoiceWarning();
+    } else {
+      showVoiceWarning('この端末に韓国語音声が見つかりません。OSの設定から韓国語音声を追加すると読み上げできます。');
+    }
+  }
+
+  if (!speechSupported) {
+    showVoiceWarning('この端末・ブラウザは音声読み上げ(Web Speech API)に対応していません。');
+    btnSpeakAll.disabled = true;
+  } else {
+    refreshVoices();
+    window.speechSynthesis.onvoiceschanged = refreshVoices;
+  }
+
+  function clearHighlight() {
+    if (currentHighlightEl) {
+      currentHighlightEl.classList.remove('speaking');
+      currentHighlightEl = null;
+    }
+  }
+
+  function highlight(el) {
+    clearHighlight();
+    if (el) {
+      el.classList.add('speaking');
+      currentHighlightEl = el;
+    }
+  }
+
+  // 1文字 or 1単語を再生する（タップ／単語再生ボタン共通）
+  function speakUnit(text, el) {
+    if (!speechSupported || !text) return;
+    window.speechSynthesis.cancel();
+    highlight(el);
+    var utter = new SpeechSynthesisUtterance(text);
+    utter.lang = 'ko-KR';
+    if (koreanVoice) utter.voice = koreanVoice;
+    utter.onend = clearHighlight;
+    utter.onerror = clearHighlight;
+    window.speechSynthesis.speak(utter);
+  }
+
+  // 全文を単語単位で順番に再生する
+  function speakAll() {
+    if (!speechSupported) return;
+    window.speechSynthesis.cancel();
+    clearHighlight();
+    var wordEls = Array.prototype.slice.call(readingOutput.querySelectorAll('.word-block'));
+    if (wordEls.length === 0) return;
+    var idx = 0;
+    function playNext() {
+      clearHighlight();
+      if (idx >= wordEls.length) return;
+      var el = wordEls[idx];
+      var text = el.dataset.word;
+      idx++;
+      if (!text) { playNext(); return; }
+      highlight(el);
+      var utter = new SpeechSynthesisUtterance(text);
+      utter.lang = 'ko-KR';
+      if (koreanVoice) utter.voice = koreanVoice;
+      utter.onend = playNext;
+      utter.onerror = playNext;
+      window.speechSynthesis.speak(utter);
+    }
+    playNext();
+  }
+
+  btnSpeakAll.addEventListener('click', speakAll);
+
+  // ---------------- テキスト直接入力 ----------------
+  document.getElementById('btn-direct-convert').addEventListener('click', function () {
+    renderReading(document.getElementById('direct-text').value);
+  });
+  document.getElementById('direct-text').addEventListener('input', function () {
+    renderReading(this.value);
+  });
+
+  // ---------------- OCR 共通処理 ----------------
+  var progressWrap = document.getElementById('ocr-progress-wrap');
+  var progressOuter = document.getElementById('progress-outer');
+  var progressInner = document.getElementById('progress-inner');
+  var recognizedWrap = document.getElementById('recognized-wrap');
+  var recognizedText = document.getElementById('recognized-text');
+
+  function setProgress(ratio) {
+    progressOuter.classList.add('active');
+    progressInner.style.width = Math.round(ratio * 100) + '%';
+  }
+  function resetProgress() {
+    progressOuter.classList.remove('active');
+    progressInner.style.width = '0%';
+  }
+
+  function runOcr(imageSource, statusEl) {
+    progressWrap.style.display = 'block';
+    statusEl.textContent = 'OCRエンジンを準備しています…（初回はダウンロードのため時間がかかります）';
+    setProgress(0);
+    return Tesseract.recognize(imageSource, 'kor', {
+      logger: function (m) {
+        if (m.status) {
+          var label = m.status === 'recognizing text' ? '文字を認識中'
+            : m.status === 'loading tesseract core' ? 'OCRエンジン読み込み中'
+            : m.status === 'initializing tesseract' ? 'OCRエンジン初期化中'
+            : m.status === 'loading language traineddata' ? '韓国語データ読み込み中'
+            : m.status === 'initializing api' ? '準備中'
+            : m.status;
+          statusEl.textContent = label + (typeof m.progress === 'number' ? '　' + Math.round(m.progress * 100) + '%' : '');
+        }
+        if (typeof m.progress === 'number') setProgress(m.progress);
+      }
+    }).then(function (result) {
+      resetProgress();
+      progressWrap.style.display = 'none';
+      var text = (result && result.data && result.data.text) ? result.data.text.trim() : '';
+      statusEl.textContent = text ? '認識が完了しました。内容を確認・修正してください。' : '文字を認識できませんでした。画像やテキスト欄を確認してください。';
+      recognizedWrap.style.display = 'block';
+      recognizedText.value = text;
+      renderReading(text);
+    }).catch(function (err) {
+      resetProgress();
+      progressWrap.style.display = 'none';
+      statusEl.textContent = 'OCRに失敗しました: ' + (err && err.message ? err.message : err);
+    });
+  }
+
+  document.getElementById('btn-reconvert').addEventListener('click', function () {
+    renderReading(recognizedText.value);
+  });
+
+  // ---------------- カメラ ----------------
+  var video = document.getElementById('camera-video');
+  var cameraCanvas = document.getElementById('camera-canvas');
+  var btnCameraStart = document.getElementById('btn-camera-start');
+  var btnCameraShot = document.getElementById('btn-camera-shot');
+  var cameraStatus = document.getElementById('camera-status');
+  var cameraStream = null;
+
+  btnCameraStart.addEventListener('click', function () {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      cameraStatus.textContent = 'このブラウザ・接続ではカメラを利用できません（HTTPSまたはlocalhostが必要です）。';
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+      .catch(function () {
+        // 背面カメラが無い環境（PCなど）向けフォールバック
+        return navigator.mediaDevices.getUserMedia({ video: true });
+      })
+      .then(function (stream) {
+        cameraStream = stream;
+        video.srcObject = stream;
+        btnCameraShot.disabled = false;
+        cameraStatus.textContent = 'カメラを起動しました。撮影ボタンを押してください。';
+      })
+      .catch(function (err) {
+        cameraStatus.textContent = 'カメラを起動できませんでした: ' + (err && err.message ? err.message : err);
+      });
+  });
+
+  btnCameraShot.addEventListener('click', function () {
+    if (!cameraStream) return;
+    var w = video.videoWidth || 640;
+    var h = video.videoHeight || 480;
+    cameraCanvas.width = w;
+    cameraCanvas.height = h;
+    var ctx = cameraCanvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, w, h);
+    runOcr(cameraCanvas, cameraStatus);
+  });
+
+  // ---------------- 写真アップロード ----------------
+  var dropzone = document.getElementById('dropzone');
+  var fileInput = document.getElementById('file-input');
+  var uploadPreview = document.getElementById('upload-preview');
+  var btnUploadOcr = document.getElementById('btn-upload-ocr');
+  var uploadStatus = document.getElementById('upload-status');
+  var currentUploadFile = null;
+
+  function loadImageFile(file) {
+    if (!file || file.type.indexOf('image/') !== 0) {
+      uploadStatus.textContent = '画像ファイルを選択してください。';
+      return;
+    }
+    currentUploadFile = file;
+    var url = URL.createObjectURL(file);
+    uploadPreview.src = url;
+    uploadPreview.style.display = 'block';
+    btnUploadOcr.disabled = false;
+    uploadStatus.textContent = '画像を読み込みました。「この画像を読み取る」を押してください。';
+  }
+
+  dropzone.addEventListener('click', function () { fileInput.click(); });
+  fileInput.addEventListener('change', function () {
+    if (fileInput.files && fileInput.files[0]) loadImageFile(fileInput.files[0]);
+  });
+
+  ['dragenter', 'dragover'].forEach(function (evt) {
+    dropzone.addEventListener(evt, function (e) {
+      e.preventDefault();
+      dropzone.classList.add('drag-over');
+    });
+  });
+  ['dragleave', 'drop'].forEach(function (evt) {
+    dropzone.addEventListener(evt, function (e) {
+      e.preventDefault();
+      dropzone.classList.remove('drag-over');
+    });
+  });
+  dropzone.addEventListener('drop', function (e) {
+    var files = e.dataTransfer && e.dataTransfer.files;
+    if (files && files[0]) loadImageFile(files[0]);
+  });
+
+  // クリップボード貼り付け（ページ全体で有効）
+  window.addEventListener('paste', function (e) {
+    var items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image/') === 0) {
+        var file = items[i].getAsFile();
+        if (file) {
+          // アップロードタブへ切り替えて表示
+          document.querySelector('.tab-btn[data-tab="upload"]').click();
+          loadImageFile(file);
+        }
+        break;
+      }
+    }
+  });
+
+  btnUploadOcr.addEventListener('click', function () {
+    if (currentUploadFile) runOcr(currentUploadFile, uploadStatus);
+  });
+})();
+</script>
