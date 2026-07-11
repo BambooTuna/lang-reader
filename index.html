@@ -116,6 +116,40 @@
     opacity: 0.5;
     cursor: default;
   }
+  /* OCR対象画像の上にドラッグで矩形選択するUI（カメラ撮影後・アップロード後 共通） */
+  .select-wrap {
+    position: relative;
+    width: 100%;
+    line-height: 0;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #111;
+  }
+  .select-wrap img {
+    width: 100%;
+    display: block;
+  }
+  .select-layer {
+    position: absolute;
+    inset: 0;
+    /* スマホでのスクロール/ピンチジェスチャーとドラッグ選択が競合しないよう必須。
+       manipulationでは不十分（縦方向のスクロールは許可されてしまう）。 */
+    touch-action: none;
+    cursor: crosshair;
+  }
+  .select-rect {
+    position: absolute;
+    display: none;
+    border: 2px solid var(--accent);
+    /* 選択範囲の外側だけを暗くマスクする定番テクニック */
+    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
+    pointer-events: none;
+  }
+  .select-hint {
+    font-size: 0.76rem;
+    color: var(--muted);
+    margin: 6px 0 0;
+  }
   .dropzone {
     border: 2px dashed var(--border);
     border-radius: 10px;
@@ -417,10 +451,22 @@
   <!-- カメラタブ -->
   <div class="panel active" id="panel-camera">
     <video id="camera-video" autoplay playsinline muted></video>
-    <canvas id="camera-canvas" class="preview-canvas" style="display:none;"></canvas>
-    <div class="btn-row">
+    <div class="select-wrap" id="camera-select-wrap" style="display:none;">
+      <img id="camera-captured-img" alt="撮影した画像">
+      <div class="select-layer" id="camera-select-layer">
+        <div class="select-rect" id="camera-select-rect"></div>
+      </div>
+    </div>
+    <canvas id="camera-canvas" style="display:none;"></canvas>
+    <p class="select-hint" id="camera-select-hint" style="display:none;">ドラッグで読み取りたい範囲を選択できます（未選択の場合は画像全体を読み取ります）</p>
+    <div class="btn-row" id="camera-live-actions">
       <button class="action" id="btn-camera-start">カメラを起動</button>
-      <button class="action" id="btn-camera-shot" disabled>撮影して読み取る</button>
+      <button class="action" id="btn-camera-shot" disabled>撮影する</button>
+    </div>
+    <div class="btn-row" id="camera-captured-actions" style="display:none;">
+      <button class="action secondary" id="btn-camera-retake">撮り直す</button>
+      <button class="action secondary" id="btn-camera-clear-select">選択解除</button>
+      <button class="action" id="btn-camera-ocr">この内容を読み取る</button>
     </div>
     <div class="status-box" id="camera-status"></div>
   </div>
@@ -433,8 +479,15 @@
       （クリップボードに画像をコピーして Ctrl+V / Cmd+V でも貼り付け可）
     </div>
     <input type="file" id="file-input" accept="image/*">
-    <img id="upload-preview" class="preview-img" style="display:none;">
+    <div class="select-wrap" id="upload-select-wrap" style="display:none;">
+      <img id="upload-preview" alt="アップロードした画像">
+      <div class="select-layer" id="upload-select-layer">
+        <div class="select-rect" id="upload-select-rect"></div>
+      </div>
+    </div>
+    <p class="select-hint" id="upload-select-hint" style="display:none;">ドラッグで読み取りたい範囲を選択できます（未選択の場合は画像全体を読み取ります）</p>
     <div class="btn-row">
+      <button class="action secondary" id="btn-upload-clear-select" style="display:none;">選択解除</button>
       <button class="action" id="btn-upload-ocr" disabled>この画像を読み取る</button>
     </div>
     <div class="status-box" id="upload-status"></div>
@@ -725,6 +778,53 @@
     });
   }
 
+  // 近接するチップの統合（重なり解消）: Tesseractは result.data.words だと
+  // CJKの単語分割が不正確で、本来1単語の「받다」が「받」「다」のように分割され、
+  // 隣接するチップが重なってしまう問題がある。result.data.lines（行単位、各行が
+  // line.words を持つ）を使い、行ごとに: フィルタ→x0昇順ソート→水平ギャップが
+  // 行の高さ×MERGE_GAP_RATIO未満なら1つのチップに統合する。
+  var MERGE_GAP_RATIO = 0.6; // 調整可能な定数
+  function buildOverlayTargetsFromLines(lines) {
+    var targets = [];
+    (lines || []).forEach(function (line) {
+      if (!line || !line.bbox) return;
+      var lineHeight = Math.max(1, line.bbox.y1 - line.bbox.y0);
+      var candidates = filterOverlayWords(line.words).slice().sort(function (a, b) {
+        return a.bbox.x0 - b.bbox.x0;
+      });
+      var merged = null;
+      candidates.forEach(function (w) {
+        if (!merged) {
+          merged = {
+            text: w.text,
+            confidence: w.confidence,
+            bbox: { x0: w.bbox.x0, y0: w.bbox.y0, x1: w.bbox.x1, y1: w.bbox.y1 }
+          };
+          return;
+        }
+        var gap = w.bbox.x0 - merged.bbox.x1;
+        if (gap < lineHeight * MERGE_GAP_RATIO) {
+          // 統合: テキスト連結・bboxは外接矩形・confidenceはmin
+          merged.text += w.text;
+          merged.bbox.x0 = Math.min(merged.bbox.x0, w.bbox.x0);
+          merged.bbox.y0 = Math.min(merged.bbox.y0, w.bbox.y0);
+          merged.bbox.x1 = Math.max(merged.bbox.x1, w.bbox.x1);
+          merged.bbox.y1 = Math.max(merged.bbox.y1, w.bbox.y1);
+          merged.confidence = Math.min(merged.confidence, w.confidence);
+        } else {
+          targets.push(merged);
+          merged = {
+            text: w.text,
+            confidence: w.confidence,
+            bbox: { x0: w.bbox.x0, y0: w.bbox.y0, x1: w.bbox.x1, y1: w.bbox.y1 }
+          };
+        }
+      });
+      if (merged) targets.push(merged);
+    });
+    return targets;
+  }
+
   // 単語テキストのうちハングル部分だけを読みに変換する（連音化も単語内で適用される）
   function buildWordReading(rawText) {
     var tokens = window.HangulReader.convertText(rawText);
@@ -753,8 +853,9 @@
     resetZoom();
   }
 
-  // words: Tesseract result.data.words、imageInfo: {src, width, height}（natural pixelサイズ）
-  function renderOverlay(words, imageInfo) {
+  // targets: buildOverlayTargetsFromLines()で作った統合済みチップ候補（{text,bbox,confidence}の配列）
+  // imageInfo: {src, width, height}（natural pixelサイズ、元画像＝前処理前の画像を渡す）
+  function renderOverlay(targets, imageInfo) {
     clearOverlayChips();
     resetZoom();
     if (!imageInfo || !imageInfo.src || !imageInfo.width || !imageInfo.height) {
@@ -762,9 +863,8 @@
       return;
     }
     overlayImage.src = imageInfo.src;
-    var targets = filterOverlayWords(words);
 
-    targets.forEach(function (w) {
+    (targets || []).forEach(function (w) {
       var reading = buildWordReading(w.text);
       if (!reading.hangulText) return;
       var bbox = w.bbox;
@@ -826,6 +926,91 @@
     renderReading(this.value);
   });
 
+  // ---------------- OCR領域選択（ドラッグで矩形選択） ----------------
+  // ライブラリは使わず素の Pointer Events (pointerdown/move/up) のみで実装する。
+  // 選択レイヤーには touch-action:none が必須（スマホでのスクロール/ピンチと
+  // 競合するため。manipulationでは縦スクロールを許してしまい不十分）。
+  function setupRegionSelector(layerEl, imgEl) {
+    var rectEl = layerEl.querySelector('.select-rect');
+    var dragging = false;
+    var startXPct = 0, startYPct = 0;
+    var selection = null; // {leftPct, topPct, widthPct, heightPct}（レイヤー基準0-100）
+
+    function pointToPct(clientX, clientY) {
+      var r = layerEl.getBoundingClientRect();
+      var w = r.width || 1;
+      var h = r.height || 1;
+      var x = Math.min(Math.max(clientX - r.left, 0), w);
+      var y = Math.min(Math.max(clientY - r.top, 0), h);
+      return { xPct: (x / w) * 100, yPct: (y / h) * 100 };
+    }
+
+    function applyRectStyle(x0, y0, x1, y1) {
+      var left = Math.min(x0, x1), top = Math.min(y0, y1);
+      var width = Math.abs(x1 - x0), height = Math.abs(y1 - y0);
+      rectEl.style.display = 'block';
+      rectEl.style.left = left + '%';
+      rectEl.style.top = top + '%';
+      rectEl.style.width = width + '%';
+      rectEl.style.height = height + '%';
+    }
+
+    function onPointerDown(e) {
+      if (!imgEl.naturalWidth) return;
+      dragging = true;
+      if (layerEl.setPointerCapture) {
+        try { layerEl.setPointerCapture(e.pointerId); } catch (err) { /* noop */ }
+      }
+      var p = pointToPct(e.clientX, e.clientY);
+      startXPct = p.xPct;
+      startYPct = p.yPct;
+      applyRectStyle(startXPct, startYPct, startXPct, startYPct);
+      e.preventDefault();
+    }
+    function onPointerMove(e) {
+      if (!dragging) return;
+      var p = pointToPct(e.clientX, e.clientY);
+      applyRectStyle(startXPct, startYPct, p.xPct, p.yPct);
+      e.preventDefault();
+    }
+    function onPointerUp(e) {
+      if (!dragging) return;
+      dragging = false;
+      var p = pointToPct(e.clientX, e.clientY);
+      var left = Math.min(startXPct, p.xPct), top = Math.min(startYPct, p.yPct);
+      var width = Math.abs(p.xPct - startXPct), height = Math.abs(p.yPct - startYPct);
+      if (width < 2 || height < 2) {
+        // 誤タップ相当の小さすぎる選択は無視し、全体読み取りのままにする
+        clearSelection();
+        return;
+      }
+      selection = { leftPct: left, topPct: top, widthPct: width, heightPct: height };
+    }
+
+    function clearSelection() {
+      selection = null;
+      rectEl.style.display = 'none';
+    }
+
+    // 画像のnatural px座標系での選択範囲を返す（未選択ならnull＝全体を対象にする）
+    function getSelectionNaturalRect() {
+      if (!selection || !imgEl.naturalWidth || !imgEl.naturalHeight) return null;
+      var nw = imgEl.naturalWidth, nh = imgEl.naturalHeight;
+      var left = Math.round(selection.leftPct / 100 * nw);
+      var top = Math.round(selection.topPct / 100 * nh);
+      var width = Math.max(1, Math.min(Math.round(selection.widthPct / 100 * nw), nw - left));
+      var height = Math.max(1, Math.min(Math.round(selection.heightPct / 100 * nh), nh - top));
+      return { left: left, top: top, width: width, height: height };
+    }
+
+    layerEl.addEventListener('pointerdown', onPointerDown);
+    layerEl.addEventListener('pointermove', onPointerMove);
+    layerEl.addEventListener('pointerup', onPointerUp);
+    layerEl.addEventListener('pointercancel', function () { dragging = false; });
+
+    return { getSelectionNaturalRect: getSelectionNaturalRect, clearSelection: clearSelection };
+  }
+
   // ---------------- OCR 共通処理 ----------------
   var progressWrap = document.getElementById('ocr-progress-wrap');
   var progressOuter = document.getElementById('progress-outer');
@@ -842,14 +1027,105 @@
     progressInner.style.width = '0%';
   }
 
-  // getOverlayInfo: 省略可。OCRに使った画像の {src, width, height}（natural pixelサイズ）を
-  // 返す関数。認識完了後（画像の読み込みが確実に終わっているタイミング）に呼び出す。
-  function runOcr(imageSource, statusEl, getOverlayInfo) {
+  // PSM (Page Segmentation Mode):
+  // IMG_5411.jpg（韓国語単語帳の実写真）で PSM=3(AUTO, Tesseractのデフォルト) と
+  // PSM=6(SINGLE_BLOCK) をA/B比較した結果、PSM=3はレイアウト解析に失敗し正解語0/10
+  // （全体画像・切り出し列のいずれも0/10）だったのに対し、PSM=6は全体画像5/10・
+  // 切り出し列6/10と大きく上回ったため、PSM=6を採用する。
+  var OCR_PSM = '6';
+
+  // 前処理（アップスケール＋グレースケール＋コントラストストレッチ、二値化はしない）。
+  // 実写真での検証の結果、既に十分な解像度がある画像（短辺1000px以上）ではアップスケール
+  // しても正解数は変化せず、むしろ処理時間が最大3倍近くに悪化したため、短辺が小さい画像
+  // （＝領域選択で小さく切り出した場合など）にのみアップスケールを適用する。
+  var UPSCALE_SHORT_SIDE_THRESHOLD = 1000;
+  var UPSCALE_TARGET_SHORT_SIDE = 1400;
+  var UPSCALE_LONG_SIDE_CAP = 6000; // メモリ暴発防止の上限
+
+  function computePreprocessScale(shortSide, longSide) {
+    if (shortSide >= UPSCALE_SHORT_SIDE_THRESHOLD) return 1;
+    var scale = UPSCALE_TARGET_SHORT_SIDE / shortSide;
+    scale = Math.min(Math.max(scale, 2), 3);
+    if (longSide * scale > UPSCALE_LONG_SIDE_CAP) scale = UPSCALE_LONG_SIDE_CAP / longSide;
+    return scale;
+  }
+
+  // srcEl: drawImageできる要素(img/canvas/video)。naturalW/naturalH: そのままの(等倍)サイズ。
+  // 戻り値: { canvas: 前処理済みcanvas, scale: 適用した拡大率 }
+  function buildPreprocessedCanvas(srcEl, naturalW, naturalH) {
+    var shortSide = Math.min(naturalW, naturalH);
+    var longSide = Math.max(naturalW, naturalH);
+    var scale = computePreprocessScale(shortSide, longSide);
+
+    var canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(naturalW * scale));
+    canvas.height = Math.max(1, Math.round(naturalH * scale));
+    var ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(srcEl, 0, 0, canvas.width, canvas.height);
+
+    // グレースケール化＋コントラストストレッチ（ヒストグラムの最小/最大値で線形伸長）。
+    // 二値化(閾値による白黒化)はしない — Tesseract内部のadaptive binarizationと
+    // 競合し逆効果になるとの報告があるため。
+    var imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    var data = imgData.data;
+    var min = 255, max = 0, i, gray;
+    for (i = 0; i < data.length; i += 4) {
+      gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+      data[i] = gray;
+      if (gray < min) min = gray;
+      if (gray > max) max = gray;
+    }
+    var range = max - min;
+    for (i = 0; i < data.length; i += 4) {
+      var v = range > 5 ? ((data[i] - min) / range) * 255 : data[i];
+      data[i] = data[i + 1] = data[i + 2] = v;
+    }
+    ctx.putImageData(imgData, 0, 0);
+
+    return { canvas: canvas, scale: scale };
+  }
+
+  function descaleBbox(b, scale) {
+    return { x0: b.x0 / scale, y0: b.y0 / scale, x1: b.x1 / scale, y1: b.y1 / scale };
+  }
+  function descaleLines(lines, scale) {
+    if (scale === 1) return lines || [];
+    return (lines || []).map(function (line) {
+      return {
+        bbox: descaleBbox(line.bbox, scale),
+        words: (line.words || []).map(function (w) {
+          return { text: w.text, confidence: w.confidence, bbox: descaleBbox(w.bbox, scale) };
+        })
+      };
+    });
+  }
+
+  // getOverlayInfo: 省略可。OCRに使った「元画像」(前処理前・表示用)の{src,width,height}を
+  //   返す関数。認識完了後（画像の読み込みが確実に終わっているタイミング）に呼び出す。
+  // opts.rectangle: 省略可。前処理後canvasの自然px座標系でのTesseract rectangleオプション
+  //   （{left,top,width,height}）。Node+tesseract.js@5での検証の結果、rectangle使用時に
+  //   Tesseractが返すbboxはrectangle起点の相対座標ではなく、recognizeに渡した画像に対する
+  //   絶対座標だったため、そのまま使え追加のオフセット補正は不要。
+  // opts.scale: 省略可(既定1)。前処理でのアップスケール倍率。オーバーレイ表示は元画像基準の
+  //   ％なので、bboxをこの倍率で割り戻してから使う。
+  function runOcr(imageForOcr, statusEl, getOverlayInfo, opts) {
+    opts = opts || {};
+    var rectangle = opts.rectangle || null;
+    var scale = opts.scale || 1;
+
     progressWrap.style.display = 'block';
     statusEl.textContent = 'OCRエンジンを準備しています…（初回はダウンロードのため時間がかかります）';
     setProgress(0);
     hideOverlaySection();
-    return Tesseract.recognize(imageSource, 'kor', {
+
+    var worker = null;
+    // rectangleオプションやPSM指定(setParameters)を使うには、Tesseract.recognize()の
+    //簡易呼び出しではなく createWorker → setParameters → worker.recognize の手順が必要
+    // （簡易呼び出しの第3引数はワーカー生成オプションであり、rectangleは無視されてしまう
+    // ことをNodeでの検証で確認済み）。
+    return Tesseract.createWorker('kor', undefined, {
       logger: function (m) {
         if (m.status) {
           var label = m.status === 'recognizing text' ? '文字を認識中'
@@ -862,17 +1138,26 @@
         }
         if (typeof m.progress === 'number') setProgress(m.progress);
       }
+    }).then(function (w) {
+      worker = w;
+      return worker.setParameters({ tessedit_pageseg_mode: OCR_PSM });
+    }).then(function () {
+      return worker.recognize(imageForOcr, rectangle ? { rectangle: rectangle } : {});
+    }).then(function (result) {
+      return worker.terminate().then(function () { return result; });
     }).then(function (result) {
       resetProgress();
       progressWrap.style.display = 'none';
       var text = (result && result.data && result.data.text) ? result.data.text.trim() : '';
-      var words = (result && result.data && result.data.words) ? result.data.words : [];
+      var rawLines = (result && result.data && result.data.lines) ? result.data.lines : [];
+      var lines = descaleLines(rawLines, scale);
       statusEl.textContent = text ? '認識が完了しました。内容を確認・修正してください。' : '文字を認識できませんでした。画像やテキスト欄を確認してください。';
       recognizedWrap.style.display = 'block';
       recognizedText.value = text;
       renderReading(text);
       if (getOverlayInfo) {
-        renderOverlay(words, getOverlayInfo());
+        var targets = buildOverlayTargetsFromLines(lines);
+        renderOverlay(targets, getOverlayInfo());
       } else {
         hideOverlaySection();
       }
@@ -880,6 +1165,7 @@
       resetProgress();
       progressWrap.style.display = 'none';
       statusEl.textContent = 'OCRに失敗しました: ' + (err && err.message ? err.message : err);
+      if (worker) { worker.terminate().catch(function () {}); }
     });
   }
 
@@ -890,10 +1176,19 @@
   // ---------------- カメラ ----------------
   var video = document.getElementById('camera-video');
   var cameraCanvas = document.getElementById('camera-canvas');
+  var cameraCapturedImg = document.getElementById('camera-captured-img');
+  var cameraSelectWrap = document.getElementById('camera-select-wrap');
+  var cameraSelectHint = document.getElementById('camera-select-hint');
+  var cameraLiveActions = document.getElementById('camera-live-actions');
+  var cameraCapturedActions = document.getElementById('camera-captured-actions');
   var btnCameraStart = document.getElementById('btn-camera-start');
   var btnCameraShot = document.getElementById('btn-camera-shot');
+  var btnCameraRetake = document.getElementById('btn-camera-retake');
+  var btnCameraClearSelect = document.getElementById('btn-camera-clear-select');
+  var btnCameraOcr = document.getElementById('btn-camera-ocr');
   var cameraStatus = document.getElementById('camera-status');
   var cameraStream = null;
+  var cameraSelector = setupRegionSelector(document.getElementById('camera-select-layer'), cameraCapturedImg);
 
   btnCameraStart.addEventListener('click', function () {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -916,6 +1211,23 @@
       });
   });
 
+  function showCameraCapturedStage() {
+    video.style.display = 'none';
+    cameraSelectWrap.style.display = 'block';
+    cameraSelectHint.style.display = 'block';
+    cameraLiveActions.style.display = 'none';
+    cameraCapturedActions.style.display = 'flex';
+  }
+  function showCameraLiveStage() {
+    video.style.display = 'block';
+    cameraSelectWrap.style.display = 'none';
+    cameraSelectHint.style.display = 'none';
+    cameraLiveActions.style.display = 'flex';
+    cameraCapturedActions.style.display = 'none';
+    cameraSelector.clearSelection();
+    hideOverlaySection();
+  }
+
   btnCameraShot.addEventListener('click', function () {
     if (!cameraStream) return;
     var w = video.videoWidth || 640;
@@ -924,18 +1236,49 @@
     cameraCanvas.height = h;
     var ctx = cameraCanvas.getContext('2d');
     ctx.drawImage(video, 0, 0, w, h);
-    runOcr(cameraCanvas, cameraStatus, function () {
-      return { src: cameraCanvas.toDataURL('image/png'), width: w, height: h };
-    });
+    cameraCapturedImg.src = cameraCanvas.toDataURL('image/png');
+    cameraSelector.clearSelection();
+    showCameraCapturedStage();
+    cameraStatus.textContent = '範囲をドラッグして選択するか、そのまま「この内容を読み取る」を押してください。';
+  });
+
+  btnCameraRetake.addEventListener('click', function () {
+    showCameraLiveStage();
+    cameraStatus.textContent = 'カメラを起動しました。撮影ボタンを押してください。';
+  });
+
+  btnCameraClearSelect.addEventListener('click', function () {
+    cameraSelector.clearSelection();
+  });
+
+  btnCameraOcr.addEventListener('click', function () {
+    var naturalW = cameraCanvas.width;
+    var naturalH = cameraCanvas.height;
+    var selRect = cameraSelector.getSelectionNaturalRect();
+    // 前処理はcanvas(cameraCanvas)から直接行う（<img>の読み込み待ちが不要で確実なため）
+    var prep = buildPreprocessedCanvas(cameraCanvas, naturalW, naturalH);
+    var rectangle = selRect ? {
+      left: Math.round(selRect.left * prep.scale),
+      top: Math.round(selRect.top * prep.scale),
+      width: Math.round(selRect.width * prep.scale),
+      height: Math.round(selRect.height * prep.scale)
+    } : null;
+    runOcr(prep.canvas, cameraStatus, function () {
+      return { src: cameraCapturedImg.src, width: naturalW, height: naturalH };
+    }, { rectangle: rectangle, scale: prep.scale });
   });
 
   // ---------------- 写真アップロード ----------------
   var dropzone = document.getElementById('dropzone');
   var fileInput = document.getElementById('file-input');
   var uploadPreview = document.getElementById('upload-preview');
+  var uploadSelectWrap = document.getElementById('upload-select-wrap');
+  var uploadSelectHint = document.getElementById('upload-select-hint');
+  var btnUploadClearSelect = document.getElementById('btn-upload-clear-select');
   var btnUploadOcr = document.getElementById('btn-upload-ocr');
   var uploadStatus = document.getElementById('upload-status');
   var currentUploadFile = null;
+  var uploadSelector = setupRegionSelector(document.getElementById('upload-select-layer'), uploadPreview);
 
   function loadImageFile(file) {
     if (!file || file.type.indexOf('image/') !== 0) {
@@ -945,10 +1288,18 @@
     currentUploadFile = file;
     var url = URL.createObjectURL(file);
     uploadPreview.src = url;
-    uploadPreview.style.display = 'block';
+    uploadSelectWrap.style.display = 'block';
+    uploadSelectHint.style.display = 'block';
+    btnUploadClearSelect.style.display = 'block';
+    uploadSelector.clearSelection();
+    hideOverlaySection();
     btnUploadOcr.disabled = false;
-    uploadStatus.textContent = '画像を読み込みました。「この画像を読み取る」を押してください。';
+    uploadStatus.textContent = '画像を読み込みました。範囲を選択するか、そのまま「この画像を読み取る」を押してください。';
   }
+
+  btnUploadClearSelect.addEventListener('click', function () {
+    uploadSelector.clearSelection();
+  });
 
   dropzone.addEventListener('click', function () { fileInput.click(); });
   fileInput.addEventListener('change', function () {
@@ -990,11 +1341,20 @@
   });
 
   btnUploadOcr.addEventListener('click', function () {
-    if (currentUploadFile) {
-      runOcr(currentUploadFile, uploadStatus, function () {
-        return { src: uploadPreview.src, width: uploadPreview.naturalWidth, height: uploadPreview.naturalHeight };
-      });
-    }
+    if (!currentUploadFile) return;
+    var naturalW = uploadPreview.naturalWidth;
+    var naturalH = uploadPreview.naturalHeight;
+    var selRect = uploadSelector.getSelectionNaturalRect();
+    var prep = buildPreprocessedCanvas(uploadPreview, naturalW, naturalH);
+    var rectangle = selRect ? {
+      left: Math.round(selRect.left * prep.scale),
+      top: Math.round(selRect.top * prep.scale),
+      width: Math.round(selRect.width * prep.scale),
+      height: Math.round(selRect.height * prep.scale)
+    } : null;
+    runOcr(prep.canvas, uploadStatus, function () {
+      return { src: uploadPreview.src, width: naturalW, height: naturalH };
+    }, { rectangle: rectangle, scale: prep.scale });
   });
 })();
 </script>
