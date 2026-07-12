@@ -935,6 +935,34 @@
     return targets;
   }
 
+  // LLM高精度モードON時専用: フィルタ無しで行単位のターゲットを作る。
+  // 診断の結果、confidence>=55やハングル率50%以上というフィルタは、正しく検出できている
+  // 語（例: conf=44の「받」等）まで捨てる一方、読み間違いのゴミ断片（例: conf=90の「삐」）
+  // を通してしまう逆転が起きていた。Tesseractは「テキストがありそうな行の位置」を探す
+  // アンテナとしてのみ使い、テキストの正誤判定・ノイズ除去はLLMの補正結果に委ねる
+  // （空文字を返した行は除外＝これが従来のフィルタの代替になる）。
+  // 行内マージも行わない（1行=1ターゲットとしてそのままLLMに渡す）。
+  var LLM_MAX_LINE_TARGETS = 60; // 1回のOCRで送信する行数の上限（超過分はconfidence降順で足切り）
+
+  // 戻り値: { targets: [{text,bbox,confidence}], truncated: bool }
+  function buildOverlayTargetsFromLinesUnfiltered(lines) {
+    var targets = (lines || [])
+      .filter(function (line) { return line && line.bbox && (line.text || '').trim(); })
+      .map(function (line) {
+        return {
+          text: line.text.trim(),
+          bbox: { x0: line.bbox.x0, y0: line.bbox.y0, x1: line.bbox.x1, y1: line.bbox.y1 },
+          confidence: line.confidence
+        };
+      });
+    var truncated = false;
+    if (targets.length > LLM_MAX_LINE_TARGETS) {
+      targets = targets.slice().sort(function (a, b) { return b.confidence - a.confidence; }).slice(0, LLM_MAX_LINE_TARGETS);
+      truncated = true;
+    }
+    return { targets: targets, truncated: truncated };
+  }
+
   // 単語テキストのうちハングル部分だけを読みに変換する（連音化も単語内で適用される）
   function buildWordReading(rawText) {
     var tokens = window.HangulReader.convertText(rawText);
@@ -1349,12 +1377,15 @@
     var content = base64PngArray.map(function (b64) {
       return { type: 'image', source: { type: 'base64', media_type: 'image/png', data: b64 } };
     });
+    // 各画像は行単位の切り抜きのため、単語1つとは限らず複数の単語やスペースを含む
+    // 一文の場合もある（その場合はそのまま含めて返す）。
     var promptText = useStructured
-      ? ('各画像は韓国語単語帳の切り抜きです。画像は' + base64PngArray.length +
-        '枚あります。各画像に写っている韓国語テキストを、texts配列に画像と同じ順で入れて返してください。' +
-        '韓国語が読み取れない画像は空文字にしてください。')
-      : ('各画像は韓国語単語帳の切り抜きです。画像' + base64PngArray.length +
-        '枚それぞれに写っている韓国語テキストのみを、["텍스트1","텍스트2",...] のようなJSON配列だけで返してください。' +
+      ? ('各画像は韓国語単語帳の1行分の切り抜きです。画像は' + base64PngArray.length +
+        '枚あります。各画像に写っている韓国語テキストを（複数の単語やスペースを含む場合はそのまま）、' +
+        'texts配列に画像と同じ順で入れて返してください。韓国語が読み取れない画像は空文字にしてください。')
+      : ('各画像は韓国語単語帳の1行分の切り抜きです。画像' + base64PngArray.length +
+        '枚それぞれに写っている韓国語テキストを（複数の単語やスペースを含む場合はそのまま）、' +
+        '["텍스트1","텍스트2",...] のようなJSON配列だけで返してください。' +
         '韓国語が読み取れない画像は空文字にしてください。説明文は不要です。');
     content.push({ type: 'text', text: promptText });
 
@@ -1535,26 +1566,45 @@
       }
 
       var imageInfo = getOverlayInfo();
-      var targets = buildOverlayTargetsFromLines(lines);
+      // OFF時の表示、およびON時にLLM補正が失敗した場合のフォールバック表示に使う
+      // （従来通りのフィルタ＋行内マージ済みターゲット）。
+      var filteredTargets = buildOverlayTargetsFromLines(lines);
 
       // 高精度モード（LLM）がON かつ APIキー設定済みの場合のみ、Tesseractの結果を
-      // LLMでテキスト補正する。OFF/未設定なら従来通り一切APIを呼ばない。
-      if (isLlmModeActive() && targets.length > 0) {
-        return correctTargetsWithLlm(targets, imageInfo, statusEl).then(function (res) {
-          renderOverlay(res.targets, imageInfo);
-          var correctedFullText = res.targets.map(function (t) { return t.text; }).join('\n');
-          var finalText = correctedFullText || text;
-          recognizedText.value = finalText;
-          renderReading(finalText);
-          if (res.errorMessage) {
-            statusEl.textContent = res.errorMessage + '（Tesseractの認識結果を表示しています）';
-          } else {
-            statusEl.textContent = finalText ? '認識が完了しました（LLM補正済み）。内容を確認・修正してください。' : '文字を認識できませんでした。画像やテキスト欄を確認してください。';
-          }
-        });
+      // LLMでテキスト補正する。OFF/未設定なら従来通り一切APIを呼ばない（このブロックには入らない）。
+      if (isLlmModeActive()) {
+        // ON時はconfidence/ハングル率フィルタを適用しない行単位ターゲットを使う。
+        // Tesseractは「テキストがありそうな行の位置」を探すアンテナとしてのみ使い、
+        // 正誤判定・ノイズ除去はLLMの補正結果（空文字→除外）に委ねる。
+        var unfiltered = buildOverlayTargetsFromLinesUnfiltered(lines);
+        if (unfiltered.targets.length > 0) {
+          var truncNote = unfiltered.truncated
+            ? '（行数が多いため上位' + LLM_MAX_LINE_TARGETS + '行のみ補正しました）'
+            : '';
+          return correctTargetsWithLlm(unfiltered.targets, imageInfo, statusEl).then(function (res) {
+            if (res.errorMessage) {
+              // LLM呼び出し失敗時: フィルタ無しの生ターゲットをそのまま出すとゴミ断片
+              // だらけになるため、Tesseract結果＋従来フィルタ(OFF時と同じ処理)で表示する。
+              renderOverlay(filteredTargets, imageInfo);
+              recognizedText.value = text;
+              renderReading(text);
+              statusEl.textContent = res.errorMessage + '（Tesseractの認識結果を表示しています）';
+              return;
+            }
+            renderOverlay(res.targets, imageInfo);
+            var correctedFullText = res.targets.map(function (t) { return t.text; }).join('\n');
+            var finalText = correctedFullText || text;
+            recognizedText.value = finalText;
+            renderReading(finalText);
+            statusEl.textContent = (finalText
+              ? '認識が完了しました（LLM補正済み）。内容を確認・修正してください。'
+              : '文字を認識できませんでした。画像やテキスト欄を確認してください。') + truncNote;
+          });
+        }
+        // 行自体が1つも検出できなかった場合は下の従来表示(空)にフォールバックする
       }
 
-      renderOverlay(targets, imageInfo);
+      renderOverlay(filteredTargets, imageInfo);
       statusEl.textContent = text ? '認識が完了しました。内容を確認・修正してください。' : '文字を認識できませんでした。画像やテキスト欄を確認してください。';
     }).catch(function (err) {
       resetProgress();
