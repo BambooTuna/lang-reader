@@ -429,6 +429,37 @@
     margin-top: 24px;
     padding: 0 20px;
   }
+  .app-version {
+    display: block;
+    font-size: 0.66rem;
+    color: var(--muted);
+    opacity: 0.75;
+    margin-top: 4px;
+  }
+  /* LLM高精度モードの使用状況バッジ（成功/失敗/未使用で色分け） */
+  .llm-usage-badge {
+    display: none;
+    font-size: 0.8rem;
+    line-height: 1.5;
+    border-radius: 8px;
+    padding: 8px 12px;
+    margin: 10px 0;
+  }
+  .llm-usage-badge.success {
+    background: #eaf7ea;
+    border: 1px solid #b8e0b8;
+    color: #2d6a2d;
+  }
+  .llm-usage-badge.failure {
+    background: #fdf1ec;
+    border: 1px solid #f3d5c8;
+    color: var(--accent);
+  }
+  .llm-usage-badge.inactive {
+    background: #f1efe9;
+    border: 1px solid var(--border);
+    color: var(--muted);
+  }
   /* 高精度モード（LLM）設定 */
   .llm-settings {
     background: var(--panel);
@@ -626,6 +657,10 @@
     </div>
   </div>
 
+  <!-- 直近のOCR結果がLLM高精度モードを通ったかどうかを示す常設バッジ。
+       statusとは独立していて、次のOCR実行までは他のメッセージで上書きされない。 -->
+  <div class="llm-usage-badge" id="llm-usage-badge" style="display:none;"></div>
+
   <section class="overlay-section" id="overlay-section" style="display:none;">
     <h2>画像ルビ表示</h2>
     <p class="overlay-hint">ハングルの単語部分にローマ字ルビを重ねて表示します。チップまたは枠をタップすると発音を再生します。小さくて見づらいときは下のボタンで拡大できます。</p>
@@ -656,6 +691,7 @@
 
 <footer>
   OCR: Tesseract.js（初回はインターネット接続が必要）／ 発音規則は連音化・終声の代表音化のみの簡易実装です
+  <span class="app-version" id="app-version-label"></span>
 </footer>
 
 <script src="hangul.js"></script>
@@ -663,6 +699,11 @@
 <script>
 (function () {
   'use strict';
+
+  // ★★★ デプロイ時に更新すること ★★★（フッターに常時表示。実機での動作確認に使う）
+  var APP_VERSION = 'v0.8.0 (2026-07-12)';
+  var appVersionLabel = document.getElementById('app-version-label');
+  if (appVersionLabel) appVersionLabel.textContent = APP_VERSION;
 
   // ---------------- タブ切替 ----------------
   var tabButtons = document.querySelectorAll('.tab-btn');
@@ -1055,12 +1096,15 @@
   }
 
   // ---------------- テキスト直接入力 ----------------
+  // OCRを使わないタブなのでLLM使用状況バッジは常に非表示にする。
   document.getElementById('btn-direct-convert').addEventListener('click', function () {
     hideOverlaySection();
+    hideLlmUsageBadge();
     renderReading(document.getElementById('direct-text').value);
   });
   document.getElementById('direct-text').addEventListener('input', function () {
     hideOverlaySection();
+    hideLlmUsageBadge();
     renderReading(this.value);
   });
 
@@ -1181,6 +1225,14 @@
     return getLlmModeEnabledStored() && !!getLlmApiKey();
   }
 
+  // 「LLMが使われているか」を実機で切り分けるための表示用ラベル。
+  // OFFの場合は理由（キー未設定 or トグルOFF）まで分かるようにする。
+  function describeLlmModeForStatus() {
+    if (isLlmModeActive()) return 'ON';
+    if (!getLlmApiKey()) return 'OFF（APIキー未設定）';
+    return 'OFF';
+  }
+
   function refreshLlmSettingsUi() {
     var hasKey = !!getLlmApiKey();
     toggleLlmMode.disabled = !hasKey;
@@ -1211,6 +1263,20 @@
   btnLlmToggleVisibility.addEventListener('click', function () {
     llmApiKeyInput.type = (llmApiKeyInput.type === 'password') ? 'text' : 'password';
   });
+
+  // ---------------- LLM使用状況バッジ ----------------
+  // 直近のOCR結果がLLMを通ったかどうかを示す常設表示。ステータス文言と違い、
+  // 次のOCR実行まで他のメッセージで上書きされない（"設定したのにLLMが使われて
+  // いないように見える"問題の切り分け用）。
+  var llmUsageBadge = document.getElementById('llm-usage-badge');
+  function setLlmUsageBadge(kind, text) {
+    llmUsageBadge.className = 'llm-usage-badge ' + kind;
+    llmUsageBadge.textContent = text;
+    llmUsageBadge.style.display = 'block';
+  }
+  function hideLlmUsageBadge() {
+    llmUsageBadge.style.display = 'none';
+  }
 
   // ---------------- OCR 共通処理 ----------------
   var progressWrap = document.getElementById('ocr-progress-wrap');
@@ -1490,17 +1556,21 @@
         return callAnthropicBatch(apiKey, crops).then(function (texts) {
           if (texts && texts.length === idxChunk.length) {
             idxChunk.forEach(function (targetIdx, i) { corrected[targetIdx].text = texts[i]; });
+            console.log('[LLM] chunk ' + (chunkPos + 1) + '/' + chunks.length + ' ok (' + idxChunk.length + ' images)');
+          } else {
+            // texts が null または枚数不一致の場合はこのチャンクをTesseract結果のままにする
+            console.log('[LLM] chunk ' + (chunkPos + 1) + '/' + chunks.length + ' unexpected response (期待' + idxChunk.length + '件, 受信' + (texts ? texts.length : 'null') + '件) → このチャンクはTesseract結果のまま');
           }
-          // texts が null または枚数不一致の場合はこのチャンクをTesseract結果のままにする
         }).catch(function (err) {
           errorMessage = describeLlmError(err);
+          console.log('[LLM] chunk ' + (chunkPos + 1) + '/' + chunks.length + ' error: status=' + (err && err.status) + ' message=' + (err && err.message));
         });
       });
     });
 
     return chain.then(function () {
       var filtered = corrected.filter(function (t) { return t.text && t.text.trim(); });
-      return { targets: filtered, errorMessage: errorMessage };
+      return { targets: filtered, errorMessage: errorMessage, sentCount: targets.length };
     });
   }
 
@@ -1518,11 +1588,14 @@
     opts = opts || {};
     var rectangle = opts.rectangle || null;
     var scale = opts.scale || 1;
+    // このOCR実行の間は固定（実行中にトグルを変えても表示がブレないように、開始時点の値を使う）
+    var modeLabel = describeLlmModeForStatus();
 
     progressWrap.style.display = 'block';
-    statusEl.textContent = 'OCRエンジンを準備しています…（初回はダウンロードのため時間がかかります）';
+    statusEl.textContent = '読み取り中…（高精度モード: ' + modeLabel + '）';
     setProgress(0);
     hideOverlaySection();
+    hideLlmUsageBadge();
 
     var worker = null;
     // rectangleオプションやPSM指定(setParameters)を使うには、Tesseract.recognize()の
@@ -1538,7 +1611,10 @@
             : m.status === 'loading language traineddata' ? '韓国語データ読み込み中'
             : m.status === 'initializing api' ? '準備中'
             : m.status;
-          statusEl.textContent = label + (typeof m.progress === 'number' ? '　' + Math.round(m.progress * 100) + '%' : '');
+          // OCR中ずっと現在の高精度モードが分かるようにする（"設定したのにLLMが使われて
+          // いないように見える"問題の切り分け用）。
+          statusEl.textContent = label + (typeof m.progress === 'number' ? '　' + Math.round(m.progress * 100) + '%' : '') +
+            '　[高精度モード: ' + modeLabel + ']';
         }
         if (typeof m.progress === 'number') setProgress(m.progress);
       }
@@ -1561,6 +1637,7 @@
 
       if (!getOverlayInfo) {
         hideOverlaySection();
+        hideLlmUsageBadge();
         statusEl.textContent = text ? '認識が完了しました。内容を確認・修正してください。' : '文字を認識できませんでした。画像やテキスト欄を確認してください。';
         return;
       }
@@ -1589,6 +1666,7 @@
               recognizedText.value = text;
               renderReading(text);
               statusEl.textContent = res.errorMessage + '（Tesseractの認識結果を表示しています）';
+              setLlmUsageBadge('failure', '⚠️ LLM補正失敗→Tesseract結果を表示中: ' + res.errorMessage);
               return;
             }
             renderOverlay(res.targets, imageInfo);
@@ -1599,13 +1677,19 @@
             statusEl.textContent = (finalText
               ? '認識が完了しました（LLM補正済み）。内容を確認・修正してください。'
               : '文字を認識できませんでした。画像やテキスト欄を確認してください。') + truncNote;
+            setLlmUsageBadge('success', '🤖 LLM補正済み（' + LLM_MODEL + '・' + res.sentCount + '行送信/' + res.targets.length + '行表示）');
           });
         }
         // 行自体が1つも検出できなかった場合は下の従来表示(空)にフォールバックする
+        renderOverlay(filteredTargets, imageInfo);
+        statusEl.textContent = text ? '認識が完了しました。内容を確認・修正してください。' : '文字を認識できませんでした。画像やテキスト欄を確認してください。';
+        setLlmUsageBadge('inactive', '🤖 高精度モードON（テキストが検出されなかったためLLM補正はスキップされました）');
+        return;
       }
 
       renderOverlay(filteredTargets, imageInfo);
       statusEl.textContent = text ? '認識が完了しました。内容を確認・修正してください。' : '文字を認識できませんでした。画像やテキスト欄を確認してください。';
+      setLlmUsageBadge('inactive', 'Tesseractのみ（高精度モードOFF）');
     }).catch(function (err) {
       resetProgress();
       progressWrap.style.display = 'none';
